@@ -94,6 +94,13 @@ button:disabled {
   width: 34px;
 }
 
+.brand-subtitle {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 10px 0 0;
+}
+
 .eyebrow {
   color: var(--muted);
   font-size: 12px;
@@ -237,11 +244,47 @@ select:focus {
 
 .sidebar-task-list {
   display: grid;
-  gap: 12px;
+  gap: 18px;
   grid-template-columns: 1fr;
   min-height: 0;
   overflow-y: auto;
   padding-bottom: 8px;
+}
+
+.task-folder {
+  display: grid;
+  gap: 10px;
+}
+
+.task-folder-header {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  color: var(--text);
+  display: grid;
+  font-family: CohereMono, Arial, ui-sans-serif, system-ui;
+  font-size: 13px;
+  gap: 8px;
+  grid-template-columns: 18px 1fr auto;
+  letter-spacing: 0.28px;
+  padding: 0 2px 8px;
+}
+
+.task-folder-header svg {
+  color: var(--deep-green);
+  height: 17px;
+  width: 17px;
+}
+
+.task-folder-header b {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.task-folder-empty {
+  color: var(--muted);
+  font-size: 14px;
+  margin: 0;
+  padding: 6px 2px 2px 26px;
 }
 
 .task-card {

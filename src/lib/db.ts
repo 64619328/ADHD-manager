@@ -1,6 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { ensureTasksDbLocation } from "./app-paths";
 
 export const TASK_STATUSES = ["未开始", "进行中", "已完成"] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
@@ -90,15 +89,11 @@ type EditHistoryRow = {
   created_at: string;
 };
 
-const dataDir = path.join(process.cwd(), "data");
-const dbPath = path.join(dataDir, "tasks.db");
-
-fs.mkdirSync(dataDir, { recursive: true });
-
 const globalForDb = globalThis as unknown as { taskManagerDb?: DatabaseSync };
 
 function getDb() {
   if (!globalForDb.taskManagerDb) {
+    const dbPath = ensureTasksDbLocation();
     const connection = new DatabaseSync(dbPath, {
       open: true
     });

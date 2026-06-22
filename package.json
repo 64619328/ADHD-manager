@@ -6,7 +6,12 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "reminders:run": "node scripts/reminder.mjs",
+    "reminders:test": "node scripts/reminder.mjs --dry-run",
+    "reminders:install": "node scripts/reminder-service.mjs install",
+    "reminders:uninstall": "node scripts/reminder-service.mjs uninstall",
+    "reminders:status": "node scripts/reminder-service.mjs status"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

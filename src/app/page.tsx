@@ -7,6 +7,7 @@ import {
   Circle,
   Clock3,
   FileClock,
+  Folder,
   ListChecks,
   Loader2,
   Plus,
@@ -19,6 +20,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 
 const statuses = ["未开始", "进行中", "已完成"] as const;
 type TaskStatus = (typeof statuses)[number];
+const sidebarStatuses: TaskStatus[] = ["进行中", "未开始", "已完成"];
 const priorities = ["P0", "P1", "P2", "P3"] as const;
 type TaskPriority = (typeof priorities)[number];
 
@@ -193,6 +195,15 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+
+  const tasksByStatus = useMemo(
+    () =>
+      sidebarStatuses.map((status) => ({
+        status,
+        tasks: tasks.filter((item) => item.status === status)
+      })),
+    [tasks]
+  );
 
   const completionText = useMemo(() => {
     if (!task || task.todos.length === 0) {
@@ -380,8 +391,8 @@ export default function Home() {
       <aside className="sidebar">
         <div className="brand-row">
           <div>
-            <p className="eyebrow">本机 SQLite</p>
             <h1>放弃挣扎吧ADHD</h1>
+            <p className="brand-subtitle">不上班就会没饭吃，这就是打工人的宿命</p>
           </div>
           <ListChecks aria-hidden="true" />
         </div>
@@ -399,37 +410,50 @@ export default function Home() {
           ) : tasks.length === 0 ? (
             <p className="muted">还没有任务</p>
           ) : (
-            tasks.map((item) => {
-              const progress = getTimeProgress(item);
+            tasksByStatus.map((folder) => (
+              <section className="task-folder" key={folder.status}>
+                <div className="task-folder-header">
+                  <Folder aria-hidden="true" />
+                  <span>{folder.status}</span>
+                  <b>{folder.tasks.length}</b>
+                </div>
+                {folder.tasks.length === 0 ? (
+                  <p className="task-folder-empty">暂无任务</p>
+                ) : (
+                  folder.tasks.map((item) => {
+                    const progress = getTimeProgress(item);
 
-              return (
-                <button
-                  className={`task-card ${selectedId === item.id ? "is-active" : ""}`}
-                  key={item.id}
-                  type="button"
-                  onClick={() => handleSelectTask(item.id)}
-                >
-                  <span className={`status-dot status-${item.status}`} />
-                  <span className="task-card-main">
-                    <strong>{item.goal}</strong>
-                    <small>
-                      <span className={`priority-badge priority-${item.priority}`}>{item.priority}</span>
-                      {item.status} · 待办 {item.todoCompleted}/{item.todoTotal}
-                    </small>
-                    <span>{item.latestProgress || "暂无进度记录"}</span>
-                    <span className={`time-progress time-progress-${progress.tone}`}>
-                      <span className="time-progress-meta">
-                        <span>DDL {formatTime(item.deadlineAt)}</span>
-                        <span>{progress.label}</span>
-                      </span>
-                      <span className="time-progress-track">
-                        <span style={{ width: `${progress.percent}%` }} />
-                      </span>
-                    </span>
-                  </span>
-                </button>
-              );
-            })
+                    return (
+                      <button
+                        className={`task-card ${selectedId === item.id ? "is-active" : ""}`}
+                        key={item.id}
+                        type="button"
+                        onClick={() => handleSelectTask(item.id)}
+                      >
+                        <span className={`status-dot status-${item.status}`} />
+                        <span className="task-card-main">
+                          <strong>{item.goal}</strong>
+                          <small>
+                            <span className={`priority-badge priority-${item.priority}`}>{item.priority}</span>
+                            待办 {item.todoCompleted}/{item.todoTotal}
+                          </small>
+                          <span>{item.latestProgress || "暂无进度记录"}</span>
+                          <span className={`time-progress time-progress-${progress.tone}`}>
+                            <span className="time-progress-meta">
+                              <span>DDL {formatTime(item.deadlineAt)}</span>
+                              <span>{progress.label}</span>
+                            </span>
+                            <span className="time-progress-track">
+                              <span style={{ width: `${progress.percent}%` }} />
+                            </span>
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })
+                )}
+              </section>
+            ))
           )}
         </section>
       </aside>
