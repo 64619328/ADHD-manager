@@ -1,0 +1,15 @@
+{
+  "pages": [
+    "pages/tasks/index",
+    "pages/detail/index",
+    "pages/create/index"
+  ],
+  "window": {
+    "navigationBarTitleText": "放弃挣扎吧ADHD",
+    "navigationBarBackgroundColor": "#eeece7",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#eeece7"
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}

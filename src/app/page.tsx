@@ -4,6 +4,8 @@ import {
   CalendarClock,
   Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Circle,
   Clock3,
   FileClock,
@@ -18,9 +20,9 @@ import {
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-const statuses = ["未开始", "进行中", "已完成"] as const;
+const statuses = ["未开始", "进行中", "挂起", "已完成"] as const;
 type TaskStatus = (typeof statuses)[number];
-const sidebarStatuses: TaskStatus[] = ["进行中", "未开始", "已完成"];
+const sidebarStatuses: TaskStatus[] = ["进行中", "未开始", "已完成", "挂起"];
 const priorities = ["P0", "P1", "P2", "P3"] as const;
 type TaskPriority = (typeof priorities)[number];
 
@@ -190,6 +192,12 @@ export default function Home() {
   const [progressDraft, setProgressDraft] = useState("");
   const [editingTodoId, setEditingTodoId] = useState<number | null>(null);
   const [editingTodoContent, setEditingTodoContent] = useState("");
+  const [collapsedFolders, setCollapsedFolders] = useState<Record<TaskStatus, boolean>>({
+    进行中: false,
+    未开始: false,
+    已完成: false,
+    挂起: false
+  });
   const [history, setHistory] = useState<EditHistory[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -410,50 +418,65 @@ export default function Home() {
           ) : tasks.length === 0 ? (
             <p className="muted">还没有任务</p>
           ) : (
-            tasksByStatus.map((folder) => (
-              <section className="task-folder" key={folder.status}>
-                <div className="task-folder-header">
-                  <Folder aria-hidden="true" />
-                  <span>{folder.status}</span>
-                  <b>{folder.tasks.length}</b>
-                </div>
-                {folder.tasks.length === 0 ? (
-                  <p className="task-folder-empty">暂无任务</p>
-                ) : (
-                  folder.tasks.map((item) => {
-                    const progress = getTimeProgress(item);
+            tasksByStatus.map((folder) => {
+              const isCollapsed = collapsedFolders[folder.status];
 
-                    return (
-                      <button
-                        className={`task-card ${selectedId === item.id ? "is-active" : ""}`}
-                        key={item.id}
-                        type="button"
-                        onClick={() => handleSelectTask(item.id)}
-                      >
-                        <span className={`status-dot status-${item.status}`} />
-                        <span className="task-card-main">
-                          <strong>{item.goal}</strong>
-                          <small>
-                            <span className={`priority-badge priority-${item.priority}`}>{item.priority}</span>
-                            待办 {item.todoCompleted}/{item.todoTotal}
-                          </small>
-                          <span>{item.latestProgress || "暂无进度记录"}</span>
-                          <span className={`time-progress time-progress-${progress.tone}`}>
-                            <span className="time-progress-meta">
-                              <span>DDL {formatTime(item.deadlineAt)}</span>
-                              <span>{progress.label}</span>
-                            </span>
-                            <span className="time-progress-track">
-                              <span style={{ width: `${progress.percent}%` }} />
+              return (
+                <section className={`task-folder ${isCollapsed ? "is-collapsed" : ""}`} key={folder.status}>
+                  <button
+                    aria-expanded={!isCollapsed}
+                    className="task-folder-header"
+                    type="button"
+                    onClick={() =>
+                      setCollapsedFolders((current) => ({
+                        ...current,
+                        [folder.status]: !current[folder.status]
+                      }))
+                    }
+                  >
+                    {isCollapsed ? <ChevronRight aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
+                    <Folder aria-hidden="true" />
+                    <span>{folder.status}</span>
+                    <b>{folder.tasks.length}</b>
+                  </button>
+                  {isCollapsed ? null : folder.tasks.length === 0 ? (
+                    <p className="task-folder-empty">暂无任务</p>
+                  ) : (
+                    folder.tasks.map((item) => {
+                      const progress = getTimeProgress(item);
+
+                      return (
+                        <button
+                          className={`task-card ${selectedId === item.id ? "is-active" : ""}`}
+                          key={item.id}
+                          type="button"
+                          onClick={() => handleSelectTask(item.id)}
+                        >
+                          <span className={`status-dot status-${item.status}`} />
+                          <span className="task-card-main">
+                            <strong>{item.goal}</strong>
+                            <small>
+                              <span className={`priority-badge priority-${item.priority}`}>{item.priority}</span>
+                              待办 {item.todoCompleted}/{item.todoTotal}
+                            </small>
+                            <span>{item.latestProgress || "暂无进度记录"}</span>
+                            <span className={`time-progress time-progress-${progress.tone}`}>
+                              <span className="time-progress-meta">
+                                <span>DDL {formatTime(item.deadlineAt)}</span>
+                                <span>{progress.label}</span>
+                              </span>
+                              <span className="time-progress-track">
+                                <span style={{ width: `${progress.percent}%` }} />
+                              </span>
                             </span>
                           </span>
-                        </span>
-                      </button>
-                    );
-                  })
-                )}
-              </section>
-            ))
+                        </button>
+                      );
+                    })
+                  )}
+                </section>
+              );
+            })
           )}
         </section>
       </aside>

@@ -1,0 +1,41 @@
+<view class="page create-page">
+  <view class="hero-title">新建任务</view>
+  <view class="hero-subtitle">先把脑子里的线头放到这里</view>
+
+  <view class="form-section">
+    <text class="label">任务目标</text>
+    <textarea class="textarea" value="{{goal}}" placeholder="例如：完成任务管理小程序" bindinput="onGoalInput" />
+  </view>
+
+  <view class="form-section">
+    <text class="label">优先级</text>
+    <view class="chip-row">
+      <view
+        wx:for="{{priorities}}"
+        wx:key="*this"
+        class="chip {{priority === item ? 'active' : ''}}"
+        data-value="{{item}}"
+        bindtap="choosePriority"
+      >{{item}}</view>
+    </view>
+  </view>
+
+  <view class="form-section">
+    <text class="label">DDL 时间</text>
+    <view class="picker-row">
+      <picker mode="date" value="{{deadlineDate}}" bindchange="onDateChange">
+        <view class="picker-box">{{deadlineDate || "选择日期"}}</view>
+      </picker>
+      <picker mode="time" value="{{deadlineTime}}" bindchange="onTimeChange">
+        <view class="picker-box">{{deadlineTime || "选择时间"}}</view>
+      </picker>
+    </view>
+  </view>
+
+  <view class="form-section">
+    <text class="label">待办项</text>
+    <textarea class="textarea" value="{{todosText}}" placeholder="每行一个待办项" bindinput="onTodosInput" />
+  </view>
+
+  <button class="primary-button" loading="{{saving}}" bindtap="submit">创建任务</button>
+</view>

@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { ensureTasksDbLocation } from "./app-paths";
 
-export const TASK_STATUSES = ["未开始", "进行中", "已完成"] as const;
+export const TASK_STATUSES = ["未开始", "进行中", "挂起", "已完成"] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 export const TASK_PRIORITIES = ["P0", "P1", "P2", "P3"] as const;
 export type TaskPriority = (typeof TASK_PRIORITIES)[number];
@@ -91,6 +91,59 @@ type EditHistoryRow = {
 
 const globalForDb = globalThis as unknown as { taskManagerDb?: DatabaseSync };
 
+function ensureTaskStatusConstraint(connection: DatabaseSync) {
+  const table = connection
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'")
+    .get() as { sql?: string } | undefined;
+
+  if (table?.sql?.includes("'挂起'")) {
+    return;
+  }
+
+  connection.exec("PRAGMA foreign_keys = OFF");
+  connection.exec("BEGIN IMMEDIATE");
+
+  try {
+    connection.exec(`
+      CREATE TABLE tasks_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        goal TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('未开始', '进行中', '挂起', '已完成')) DEFAULT '未开始',
+        priority TEXT NOT NULL CHECK (priority IN ('P0', 'P1', 'P2', 'P3')) DEFAULT 'P2',
+        deadline_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+      );
+
+      INSERT INTO tasks_new (id, goal, status, priority, deadline_at, created_at, updated_at)
+      SELECT
+        id,
+        goal,
+        CASE
+          WHEN status IN ('未开始', '进行中', '挂起', '已完成') THEN status
+          ELSE '未开始'
+        END,
+        CASE
+          WHEN priority IN ('P0', 'P1', 'P2', 'P3') THEN priority
+          ELSE 'P2'
+        END,
+        deadline_at,
+        created_at,
+        updated_at
+      FROM tasks;
+
+      DROP TABLE tasks;
+      ALTER TABLE tasks_new RENAME TO tasks;
+    `);
+    connection.exec("COMMIT");
+  } catch (error) {
+    connection.exec("ROLLBACK");
+    throw error;
+  } finally {
+    connection.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
 function getDb() {
   if (!globalForDb.taskManagerDb) {
     const dbPath = ensureTasksDbLocation();
@@ -104,7 +157,7 @@ function getDb() {
       CREATE TABLE IF NOT EXISTS tasks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         goal TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('未开始', '进行中', '已完成')) DEFAULT '未开始',
+        status TEXT NOT NULL CHECK (status IN ('未开始', '进行中', '挂起', '已完成')) DEFAULT '未开始',
         priority TEXT NOT NULL CHECK (priority IN ('P0', 'P1', 'P2', 'P3')) DEFAULT 'P2',
         deadline_at TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
@@ -149,6 +202,7 @@ function getDb() {
     if (!taskColumns.some((column) => column.name === "priority")) {
       connection.exec("ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'P2'");
     }
+    ensureTaskStatusConstraint(connection);
 
     globalForDb.taskManagerDb = connection;
   }
@@ -283,6 +337,7 @@ export function getTasks(): TaskListItem[] {
       LEFT JOIN todo_items ON todo_items.task_id = tasks.id
       GROUP BY tasks.id
       ORDER BY
+        CASE WHEN tasks.status = '挂起' THEN 1 ELSE 0 END ASC,
         CASE tasks.priority
           WHEN 'P0' THEN 0
           WHEN 'P1' THEN 1
