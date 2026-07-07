@@ -12,13 +12,17 @@ import {
   Folder,
   ListChecks,
   Loader2,
+  Pause,
+  Play,
   Plus,
   Save,
+  Search,
   SquarePen,
+  Target,
   Trash2,
   X
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 
 const statuses = ["未开始", "进行中", "挂起", "已完成"] as const;
 type TaskStatus = (typeof statuses)[number];
@@ -70,6 +74,12 @@ type EditHistory = {
   oldValue: string | null;
   newValue: string | null;
   createdAt: string;
+};
+
+type TaskCelebration = {
+  taskId: number;
+  goal: string;
+  completedTodos: number;
 };
 
 function formatTime(value: string | null) {
@@ -131,6 +141,12 @@ function getTimeProgress(task: Pick<TaskDetail, "createdAt" | "deadlineAt">) {
   };
 }
 
+function formatElapsed(totalSeconds: number) {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
 function historyLabel(item: EditHistory) {
   if (item.fieldName === "goal") {
     return "任务目标";
@@ -183,7 +199,9 @@ export default function Home() {
   const [goalDraft, setGoalDraft] = useState("");
   const [deadlineDraft, setDeadlineDraft] = useState("");
   const [priorityDraft, setPriorityDraft] = useState<TaskPriority>("P2");
+  const [searchQuery, setSearchQuery] = useState("");
   const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [createAdvancedOpen, setCreateAdvancedOpen] = useState(false);
   const [newTaskGoal, setNewTaskGoal] = useState("");
   const [newTaskTodos, setNewTaskTodos] = useState("");
   const [newTaskDeadline, setNewTaskDeadline] = useState("");
@@ -195,23 +213,55 @@ export default function Home() {
   const [collapsedFolders, setCollapsedFolders] = useState<Record<TaskStatus, boolean>>({
     进行中: false,
     未开始: false,
-    已完成: false,
-    挂起: false
+    已完成: true,
+    挂起: true
   });
   const [history, setHistory] = useState<EditHistory[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [celebratingTodoId, setCelebratingTodoId] = useState<number | null>(null);
+  const [undoTodoId, setUndoTodoId] = useState<number | null>(null);
+  const [taskCelebration, setTaskCelebration] = useState<TaskCelebration | null>(null);
+  const [focusMode, setFocusMode] = useState(false);
+  const [focusPaused, setFocusPaused] = useState(false);
+  const [focusElapsed, setFocusElapsed] = useState(0);
+  const createTriggerRef = useRef<HTMLButtonElement>(null);
+  const createDialogRef = useRef<HTMLElement>(null);
+  const createGoalRef = useRef<HTMLTextAreaElement>(null);
+  const historyDialogRef = useRef<HTMLElement>(null);
+  const historyTriggerRef = useRef<HTMLButtonElement>(null);
+  const focusDialogRef = useRef<HTMLElement>(null);
+  const focusExitRef = useRef<HTMLButtonElement>(null);
+  const taskEditorRef = useRef<HTMLElement>(null);
+  const todoPanelRef = useRef<HTMLElement>(null);
+  const celebrationDialogRef = useRef<HTMLElement>(null);
+  const celebrationRestRef = useRef<HTMLButtonElement>(null);
+
+  const filteredTasks = useMemo(() => {
+    const query = searchQuery.trim().toLocaleLowerCase("zh-CN");
+    if (!query) {
+      return tasks;
+    }
+    return tasks.filter((item) =>
+      [item.goal, item.latestProgress || "", item.priority, item.status].some((value) =>
+        value.toLocaleLowerCase("zh-CN").includes(query)
+      )
+    );
+  }, [searchQuery, tasks]);
 
   const tasksByStatus = useMemo(
     () =>
       sidebarStatuses.map((status) => ({
         status,
-        tasks: tasks.filter((item) => item.status === status)
+        tasks: filteredTasks.filter((item) => item.status === status)
       })),
-    [tasks]
+    [filteredTasks]
   );
+
+  const nextTodo = useMemo(() => task?.todos.find((todo) => !todo.completed) ?? null, [task]);
 
   const completionText = useMemo(() => {
     if (!task || task.todos.length === 0) {
@@ -225,7 +275,8 @@ export default function Home() {
     const data = await requestJson<{ tasks: TaskListItem[] }>("/api/tasks");
     setTasks(data.tasks);
 
-    const currentId = nextSelectedId ?? selectedId ?? data.tasks[0]?.id ?? null;
+    const firstActiveId = data.tasks.find((item) => item.status !== "已完成" && item.status !== "挂起")?.id;
+    const currentId = nextSelectedId ?? selectedId ?? firstActiveId ?? data.tasks[0]?.id ?? null;
     setSelectedId(currentId);
 
     if (currentId) {
@@ -266,6 +317,106 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (!notice) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setNotice("");
+      setUndoTodoId(null);
+    }, 3500);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  useEffect(() => {
+    if (celebratingTodoId === null) return;
+    const timer = window.setTimeout(() => setCelebratingTodoId(null), 900);
+    return () => window.clearTimeout(timer);
+  }, [celebratingTodoId]);
+
+  useEffect(() => {
+    if (!focusMode || focusPaused) {
+      return;
+    }
+    const timer = window.setInterval(() => setFocusElapsed((value) => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [focusMode, focusPaused]);
+
+  useEffect(() => {
+    if (!taskEditorRef.current || !todoPanelRef.current) return;
+    const taskEditor = taskEditorRef.current;
+    const todoPanel = todoPanelRef.current;
+
+    function syncPanelHeight() {
+      if (window.matchMedia("(max-width: 980px)").matches) {
+        todoPanel.style.height = "";
+        return;
+      }
+      todoPanel.style.height = `${Math.round(taskEditor.getBoundingClientRect().height)}px`;
+    }
+
+    syncPanelHeight();
+    const observer = new ResizeObserver(syncPanelHeight);
+    observer.observe(taskEditor);
+    window.addEventListener("resize", syncPanelHeight);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", syncPanelHeight);
+      todoPanel.style.height = "";
+    };
+  }, [task?.id]);
+
+  useEffect(() => {
+    if (!createModalOpen && !historyOpen && !focusMode && !taskCelebration) {
+      return;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const frame = window.requestAnimationFrame(() => {
+      if (createModalOpen) createGoalRef.current?.focus();
+      if (historyOpen) historyDialogRef.current?.querySelector<HTMLElement>("button")?.focus();
+      if (focusMode) focusExitRef.current?.focus();
+      if (taskCelebration) celebrationRestRef.current?.focus();
+    });
+
+    function closeOnEscape(event: globalThis.KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      if (focusMode) setFocusMode(false);
+      else if (taskCelebration) setTaskCelebration(null);
+      else if (createModalOpen) setCreateModalOpen(false);
+      else if (historyOpen) setHistoryOpen(false);
+    }
+
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", closeOnEscape);
+      if (createModalOpen) createTriggerRef.current?.focus();
+      if (historyOpen) historyTriggerRef.current?.focus();
+    };
+  }, [createModalOpen, focusMode, historyOpen, taskCelebration]);
+
+  function trapDialogFocus(event: KeyboardEvent<HTMLElement>, container: HTMLElement | null) {
+    if (event.key !== "Tab" || !container) return;
+    const elements = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )
+    );
+    if (elements.length === 0) return;
+    const first = elements[0];
+    const last = elements[elements.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
   async function handleCreateTask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const todos = newTaskTodos
@@ -287,7 +438,9 @@ export default function Home() {
       setNewTaskTodos("");
       setNewTaskDeadline("");
       setNewTaskPriority("P2");
+      setCreateAdvancedOpen(false);
       setCreateModalOpen(false);
+      setNotice("已收进任务列表，先从下一小步开始。");
       await loadTasks(data.task.id);
     });
   }
@@ -303,6 +456,7 @@ export default function Home() {
     if (!task) {
       return;
     }
+    const isCompletingTask = values.status === "已完成" && task.status !== "已完成";
 
     await run(async () => {
       const data = await requestJson<{ task: TaskDetail }>(`/api/tasks/${task.id}`, {
@@ -313,6 +467,16 @@ export default function Home() {
       setGoalDraft(data.task.goal);
       setDeadlineDraft(toDateTimeInput(data.task.deadlineAt));
       setPriorityDraft(data.task.priority);
+      if (isCompletingTask) {
+        setNotice("");
+        setTaskCelebration({
+          taskId: data.task.id,
+          goal: data.task.goal,
+          completedTodos: data.task.todos.filter((todo) => todo.completed).length
+        });
+      } else {
+        setNotice("修改已保存。");
+      }
       await loadTasks(data.task.id);
     });
   }
@@ -330,6 +494,7 @@ export default function Home() {
       });
       setNewTodo("");
       setTask(data.task);
+      setNotice("新的一小步已加入。");
       await loadTasks(data.task.id);
     });
   }
@@ -343,8 +508,34 @@ export default function Home() {
       setTask(data.task);
       setEditingTodoId(null);
       setEditingTodoContent("");
+      if (values.completed === true) {
+        setCelebratingTodoId(todoId);
+        setUndoTodoId(todoId);
+      } else if (values.completed === false) {
+        setUndoTodoId(null);
+      }
+      setNotice(
+        values.completed === true
+          ? "完成一小步，干得漂亮。"
+          : values.completed === false
+            ? "已恢复这一步。"
+            : "这一步已更新。"
+      );
       await loadTasks(data.task.id);
     });
+  }
+
+  async function continueAfterCelebration() {
+    const completedTaskId = taskCelebration?.taskId;
+    setTaskCelebration(null);
+    const nextTask = tasks.find(
+      (item) => item.id !== completedTaskId && item.status !== "已完成" && item.status !== "挂起"
+    );
+    if (nextTask) {
+      await handleSelectTask(nextTask.id);
+    } else {
+      setNotice("今天的待推进任务已经处理完了。");
+    }
   }
 
   async function handleDeleteTodo(todoId: number) {
@@ -378,8 +569,19 @@ export default function Home() {
       });
       setProgressDraft("");
       setTask(data.task);
+      setNotice("进度已记下。");
       await loadTasks(data.task.id);
     });
+  }
+
+  async function startFocus() {
+    if (!task) return;
+    setFocusElapsed(0);
+    setFocusPaused(false);
+    setFocusMode(true);
+    if (task.status === "未开始") {
+      await handleUpdateTask({ status: "进行中" });
+    }
   }
 
   async function openHistory() {
@@ -394,29 +596,71 @@ export default function Home() {
     });
   }
 
+  function renderTaskCard(item: TaskListItem) {
+    const progress = getTimeProgress(item);
+    return (
+      <button
+        className={`task-card ${selectedId === item.id ? "is-active" : ""}`}
+        key={item.id}
+        type="button"
+        onClick={() => handleSelectTask(item.id)}
+      >
+        <span className={`status-dot status-${item.status}`} />
+        <span className="task-card-main">
+          <strong>{item.goal}</strong>
+          <span className="task-card-context">
+            {item.latestProgress || (item.todoTotal > 0 ? `还有 ${item.todoTotal - item.todoCompleted} 个小步骤` : "先补上一个可执行的小步骤")}
+          </span>
+          <span className={`task-card-meta time-progress-${progress.tone}`}>
+            <span className={`priority-badge priority-${item.priority}`}>{item.priority}</span>
+            <span>{progress.label}</span>
+          </span>
+        </span>
+      </button>
+    );
+  }
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
         <div className="brand-row">
           <div>
             <h1>放弃挣扎吧ADHD</h1>
-            <p className="brand-subtitle">不上班就会没饭吃，这就是打工人的宿命</p>
+            <p className="brand-subtitle">不和大脑硬碰硬，先完成下一小步。</p>
           </div>
           <ListChecks aria-hidden="true" />
         </div>
 
-        <nav className="sidebar-nav" aria-label="主导航">
-          <button className="primary-button" type="button" onClick={() => setCreateModalOpen(true)}>
-            <Plus aria-hidden="true" />
-            新建任务
-          </button>
-        </nav>
+        <button
+          ref={createTriggerRef}
+          className="quick-capture-trigger"
+          type="button"
+          onClick={() => setCreateModalOpen(true)}
+        >
+          <span>想到什么，先记下来…</span>
+          <Plus aria-hidden="true" />
+        </button>
+
+        <div className="search-box">
+          <Search aria-hidden="true" />
+          <label className="sr-only" htmlFor="task-search">搜索任务</label>
+          <input
+            id="task-search"
+            type="search"
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="搜索任务"
+          />
+        </div>
 
         <section className="sidebar-task-list" aria-label="任务列表">
           {loading ? (
             <p className="muted">加载中...</p>
-          ) : tasks.length === 0 ? (
-            <p className="muted">还没有任务</p>
+          ) : filteredTasks.length === 0 ? (
+            <div className="sidebar-empty">
+              <p>没有找到任务。</p>
+              <button type="button" onClick={() => setSearchQuery("")}>清除搜索</button>
+            </div>
           ) : (
             tasksByStatus.map((folder) => {
               const isCollapsed = collapsedFolders[folder.status];
@@ -441,39 +685,7 @@ export default function Home() {
                   </button>
                   {isCollapsed ? null : folder.tasks.length === 0 ? (
                     <p className="task-folder-empty">暂无任务</p>
-                  ) : (
-                    folder.tasks.map((item) => {
-                      const progress = getTimeProgress(item);
-
-                      return (
-                        <button
-                          className={`task-card ${selectedId === item.id ? "is-active" : ""}`}
-                          key={item.id}
-                          type="button"
-                          onClick={() => handleSelectTask(item.id)}
-                        >
-                          <span className={`status-dot status-${item.status}`} />
-                          <span className="task-card-main">
-                            <strong>{item.goal}</strong>
-                            <small>
-                              <span className={`priority-badge priority-${item.priority}`}>{item.priority}</span>
-                              待办 {item.todoCompleted}/{item.todoTotal}
-                            </small>
-                            <span>{item.latestProgress || "暂无进度记录"}</span>
-                            <span className={`time-progress time-progress-${progress.tone}`}>
-                              <span className="time-progress-meta">
-                                <span>DDL {formatTime(item.deadlineAt)}</span>
-                                <span>{progress.label}</span>
-                              </span>
-                              <span className="time-progress-track">
-                                <span style={{ width: `${progress.percent}%` }} />
-                              </span>
-                            </span>
-                          </span>
-                        </button>
-                      );
-                    })
-                  )}
+                  ) : folder.tasks.map(renderTaskCard)}
                 </section>
               );
             })
@@ -484,7 +696,19 @@ export default function Home() {
       <section className="workspace">
         {error ? (
           <div className="toast" role="alert">
-            {error}
+            <span>{error}</span>
+            <button type="button" onClick={() => setError("")}>知道了</button>
+          </div>
+        ) : null}
+        {notice ? (
+          <div className="toast toast-success" role="status" aria-live="polite">
+            <CheckCircle2 aria-hidden="true" />
+            <span>{notice}</span>
+            {undoTodoId !== null ? (
+              <button type="button" onClick={() => handleUpdateTodo(undoTodoId, { completed: false })}>
+                撤销
+              </button>
+            ) : null}
           </div>
         ) : null}
 
@@ -501,14 +725,27 @@ export default function Home() {
                 <p className="eyebrow">任务 #{task.id}</p>
                 <h2>{task.goal}</h2>
               </div>
-              <button className="ghost-button" type="button" onClick={openHistory}>
+              <button ref={historyTriggerRef} className="ghost-button" type="button" onClick={openHistory}>
                 <FileClock aria-hidden="true" />
                 编辑记录
               </button>
             </div>
 
+            <section className="next-action" aria-labelledby="next-action-title">
+              <div className="next-action-icon">
+                <Target aria-hidden="true" />
+              </div>
+              <div className="next-action-copy">
+                <h3 id="next-action-title">先不管别的任务，现在就专心做这一项</h3>
+              </div>
+              <button className="focus-button" type="button" onClick={startFocus} disabled={!nextTodo}>
+                <Play aria-hidden="true" />
+                开始
+              </button>
+            </section>
+
             <div className="detail-grid">
-              <section className="panel task-editor">
+              <section ref={taskEditorRef} className="panel task-editor">
                 <div className="panel-heading">
                   <h3>任务详情</h3>
                   <span>更新于 {formatTime(task.updatedAt)}</span>
@@ -520,16 +757,13 @@ export default function Home() {
                   value={goalDraft}
                   rows={4}
                   onChange={(event) => setGoalDraft(event.target.value)}
+                  onBlur={() => {
+                    if (goalDraft.trim() && goalDraft.trim() !== task.goal) {
+                      handleUpdateTask({ goal: goalDraft });
+                    }
+                  }}
                 />
-                <button
-                  className="secondary-button"
-                  type="button"
-                  disabled={saving || goalDraft.trim() === task.goal}
-                  onClick={() => handleUpdateTask({ goal: goalDraft })}
-                >
-                  <Save aria-hidden="true" />
-                  保存目标
-                </button>
+                <p className="field-hint">离开输入框后自动保存</p>
 
                 <div className="deadline-editor">
                   <label htmlFor="deadline-draft">DDL 时间</label>
@@ -539,16 +773,13 @@ export default function Home() {
                       type="datetime-local"
                       value={deadlineDraft}
                       onChange={(event) => setDeadlineDraft(event.target.value)}
+                      onBlur={() => {
+                        if (deadlineDraft !== toDateTimeInput(task.deadlineAt)) {
+                          handleUpdateTask({ deadlineAt: deadlineDraft || null });
+                        }
+                      }}
                     />
-                    <button
-                      className="secondary-button"
-                      type="button"
-                      disabled={saving || deadlineDraft === toDateTimeInput(task.deadlineAt)}
-                      onClick={() => handleUpdateTask({ deadlineAt: deadlineDraft || null })}
-                    >
-                      <CalendarClock aria-hidden="true" />
-                      保存 DDL
-                    </button>
+                    <span className="deadline-relative"><CalendarClock aria-hidden="true" />{getTimeProgress(task).label}</span>
                   </div>
                 </div>
 
@@ -560,6 +791,7 @@ export default function Home() {
                         className={priorityDraft === priority ? `priority-button active priority-${priority}` : "priority-button"}
                         key={priority}
                         type="button"
+                        aria-pressed={priorityDraft === priority}
                         onClick={() => {
                           setPriorityDraft(priority);
                           handleUpdateTask({ priority });
@@ -577,6 +809,7 @@ export default function Home() {
                       className={task.status === status ? "status-button active" : "status-button"}
                       key={status}
                       type="button"
+                      aria-pressed={task.status === status}
                       onClick={() => handleUpdateTask({ status })}
                     >
                       {status === "已完成" ? <CheckCircle2 aria-hidden="true" /> : <Clock3 aria-hidden="true" />}
@@ -586,7 +819,7 @@ export default function Home() {
                 </div>
               </section>
 
-              <section className="panel">
+              <section ref={todoPanelRef} className="panel todo-panel">
                 <div className="panel-heading">
                   <h3>待办项</h3>
                   <span>{completionText}</span>
@@ -595,7 +828,10 @@ export default function Home() {
                 <div className="todo-list">
                   {task.todos.length === 0 ? <p className="muted">暂无待办项</p> : null}
                   {task.todos.map((todo) => (
-                    <div className="todo-row" key={todo.id}>
+                    <div
+                      className={`todo-row ${celebratingTodoId === todo.id ? "is-celebrating" : ""}`}
+                      key={todo.id}
+                    >
                       <button
                         className="icon-button"
                         type="button"
@@ -652,12 +888,15 @@ export default function Home() {
                 </div>
 
                 <form className="inline-form" onSubmit={handleAddTodo}>
+                  <label className="sr-only" htmlFor="new-todo">新的下一小步</label>
                   <input
+                    id="new-todo"
                     value={newTodo}
                     onChange={(event) => setNewTodo(event.target.value)}
-                    placeholder="新增待办项"
+                    placeholder="下一小步是什么？"
+                    required
                   />
-                  <button className="icon-submit" type="submit" aria-label="新增待办">
+                  <button className="icon-submit" type="submit" aria-label="新增下一步" disabled={saving || !newTodo.trim()}>
                     <Plus aria-hidden="true" />
                   </button>
                 </form>
@@ -671,13 +910,15 @@ export default function Home() {
               </div>
 
               <form className="progress-form" onSubmit={handleAddProgress}>
+                <label className="sr-only" htmlFor="progress-draft">记录进度</label>
                 <textarea
+                  id="progress-draft"
                   value={progressDraft}
                   onChange={(event) => setProgressDraft(event.target.value)}
                   placeholder="记录今天推进了什么、遇到什么阻碍、下一步准备做什么"
                   rows={3}
                 />
-                <button className="secondary-button" type="submit">
+                <button className="secondary-button" type="submit" disabled={saving || !progressDraft.trim()}>
                   <Plus aria-hidden="true" />
                   添加记录
                 </button>
@@ -698,8 +939,17 @@ export default function Home() {
       </section>
 
       {createModalOpen ? (
-        <div className="modal-backdrop" role="presentation">
-          <section className="modal task-modal" role="dialog" aria-modal="true" aria-labelledby="create-task-title">
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setCreateModalOpen(false);
+        }}>
+          <section
+            ref={createDialogRef}
+            className="modal task-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="create-task-title"
+            onKeyDown={(event) => trapDialogFocus(event, createDialogRef.current)}
+          >
             <div className="modal-header">
               <h2 id="create-task-title">新建任务</h2>
               <button
@@ -713,48 +963,63 @@ export default function Home() {
             </div>
 
             <form className="create-task" onSubmit={handleCreateTask}>
-              <label htmlFor="new-task-goal">任务目标</label>
+              <label htmlFor="new-task-goal">现在想做什么？</label>
               <textarea
+                ref={createGoalRef}
                 id="new-task-goal"
                 value={newTaskGoal}
                 onChange={(event) => setNewTaskGoal(event.target.value)}
-                placeholder="例如：完成个人任务管理软件 MVP"
+                placeholder="先写下来，不用一次想完…"
                 rows={3}
+                required
               />
+              <p className="field-hint">只填这一项也可以，其他内容之后再补。</p>
 
-              <label htmlFor="new-task-deadline">DDL 时间</label>
-              <input
-                id="new-task-deadline"
-                type="datetime-local"
-                value={newTaskDeadline}
-                onChange={(event) => setNewTaskDeadline(event.target.value)}
-              />
-
-              <label htmlFor="new-task-priority">优先级</label>
-              <select
-                id="new-task-priority"
-                value={newTaskPriority}
-                onChange={(event) => setNewTaskPriority(event.target.value as TaskPriority)}
+              <button
+                className="advanced-toggle"
+                type="button"
+                aria-expanded={createAdvancedOpen}
+                onClick={() => setCreateAdvancedOpen((value) => !value)}
               >
-                {priorities.map((priority) => (
-                  <option key={priority} value={priority}>
-                    {priority}
-                  </option>
-                ))}
-              </select>
+                {createAdvancedOpen ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
+                补充截止时间、优先级和小步骤
+              </button>
 
-              <label htmlFor="new-task-todos">待办项</label>
-              <textarea
-                id="new-task-todos"
-                value={newTaskTodos}
-                onChange={(event) => setNewTaskTodos(event.target.value)}
-                placeholder={"每行一个待办项\n搭建项目\n实现任务编辑\n验证历史记录"}
-                rows={5}
-              />
+              {createAdvancedOpen ? (
+                <div className="advanced-fields">
+                  <label htmlFor="new-task-deadline">截止时间</label>
+                  <input
+                    id="new-task-deadline"
+                    type="datetime-local"
+                    value={newTaskDeadline}
+                    onChange={(event) => setNewTaskDeadline(event.target.value)}
+                  />
+
+                  <label htmlFor="new-task-priority">优先级</label>
+                  <select
+                    id="new-task-priority"
+                    value={newTaskPriority}
+                    onChange={(event) => setNewTaskPriority(event.target.value as TaskPriority)}
+                  >
+                    {priorities.map((priority) => (
+                      <option key={priority} value={priority}>{priority}</option>
+                    ))}
+                  </select>
+
+                  <label htmlFor="new-task-todos">拆成小步骤</label>
+                  <textarea
+                    id="new-task-todos"
+                    value={newTaskTodos}
+                    onChange={(event) => setNewTaskTodos(event.target.value)}
+                    placeholder={"每行一个 5–20 分钟可完成的步骤"}
+                    rows={4}
+                  />
+                </div>
+              ) : null}
 
               <button className="primary-button" type="submit" disabled={saving}>
                 {saving ? <Loader2 className="spin" aria-hidden="true" /> : <Plus aria-hidden="true" />}
-                创建任务
+                先记下来
               </button>
             </form>
           </section>
@@ -763,7 +1028,14 @@ export default function Home() {
 
       {historyOpen ? (
         <div className="modal-backdrop" role="presentation">
-          <section className="modal" role="dialog" aria-modal="true" aria-labelledby="history-title">
+          <section
+            ref={historyDialogRef}
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="history-title"
+            onKeyDown={(event) => trapDialogFocus(event, historyDialogRef.current)}
+          >
             <div className="modal-header">
               <h2 id="history-title">编辑记录</h2>
               <button className="icon-button" type="button" aria-label="关闭" onClick={() => setHistoryOpen(false)}>
@@ -800,6 +1072,89 @@ export default function Home() {
                   </p>
                 </article>
               ))}
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {taskCelebration ? (
+        <div className="celebration-backdrop">
+          <section
+            ref={celebrationDialogRef}
+            className="celebration-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="celebration-title"
+            aria-describedby="celebration-description"
+            onKeyDown={(event) => trapDialogFocus(event, celebrationDialogRef.current)}
+          >
+            <div className="celebration-confetti" aria-hidden="true">
+              {Array.from({ length: 16 }, (_, index) => <i key={index} />)}
+            </div>
+            <div className="celebration-check" aria-hidden="true">
+              <Check strokeWidth={3} />
+            </div>
+            <p className="celebration-kicker">任务完成</p>
+            <h2 id="celebration-title">这件事完成了。你真的推进了它。</h2>
+            <p id="celebration-description">
+              {taskCelebration.completedTodos > 0
+                ? `“${taskCelebration.goal}”共完成了 ${taskCelebration.completedTodos} 个小步骤。`
+                : `“${taskCelebration.goal}”已经完成。`}
+            </p>
+            <div className="celebration-actions">
+              <button
+                ref={celebrationRestRef}
+                className="secondary-button"
+                type="button"
+                onClick={() => {
+                  setTaskCelebration(null);
+                  setNotice("做完了，先休息一下吧。");
+                }}
+              >
+                休息一下
+              </button>
+              <button className="primary-button" type="button" onClick={continueAfterCelebration}>
+                继续下一项
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {focusMode && task ? (
+        <div className="focus-backdrop">
+          <section
+            ref={focusDialogRef}
+            className="focus-view"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="focus-title"
+            onKeyDown={(event) => trapDialogFocus(event, focusDialogRef.current)}
+          >
+            <button ref={focusExitRef} className="focus-exit" type="button" onClick={() => setFocusMode(false)}>
+              <X aria-hidden="true" />
+              退出专注
+            </button>
+            <div className="focus-content">
+              <span className="focus-kicker">现在只做一件事</span>
+              <h2 id="focus-title">{nextTodo?.content || task.goal}</h2>
+              <p>{task.goal}</p>
+              <time aria-label={`已专注 ${formatElapsed(focusElapsed)}`}>{formatElapsed(focusElapsed)}</time>
+              <div className="focus-actions">
+                <button className="secondary-button" type="button" onClick={() => setFocusPaused((value) => !value)}>
+                  {focusPaused ? <Play aria-hidden="true" /> : <Pause aria-hidden="true" />}
+                  {focusPaused ? "继续" : "暂停"}
+                </button>
+                {nextTodo ? (
+                  <button className="primary-button" type="button" onClick={async () => {
+                    await handleUpdateTodo(nextTodo.id, { completed: true });
+                    setFocusMode(false);
+                  }}>
+                    <Check aria-hidden="true" />
+                    这一步完成了
+                  </button>
+                ) : null}
+              </div>
             </div>
           </section>
         </div>

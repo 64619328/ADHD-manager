@@ -11,7 +11,11 @@
     "reminders:test": "node scripts/reminder.mjs --dry-run",
     "reminders:install": "node scripts/reminder-service.mjs install",
     "reminders:uninstall": "node scripts/reminder-service.mjs uninstall",
-    "reminders:status": "node scripts/reminder-service.mjs status"
+    "reminders:status": "node scripts/reminder-service.mjs status",
+    "web:install": "npm run build && node scripts/web-service.mjs install",
+    "web:uninstall": "node scripts/web-service.mjs uninstall",
+    "web:restart": "node scripts/web-service.mjs restart",
+    "web:status": "node scripts/web-service.mjs status"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",
