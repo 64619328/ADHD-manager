@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { apiErrorResponse } from "@/lib/api-errors";
 import { createTodo, normalizeText } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -13,24 +14,28 @@ function parseId(value: string) {
 }
 
 export async function POST(request: Request, context: RouteContext) {
-  const { id: idValue } = await context.params;
-  const id = parseId(idValue);
+  try {
+    const { id: idValue } = await context.params;
+    const id = parseId(idValue);
 
-  if (!id) {
-    return NextResponse.json({ error: "任务 ID 无效" }, { status: 400 });
+    if (!id) {
+      return NextResponse.json({ error: "任务 ID 无效" }, { status: 400 });
+    }
+
+    const body = (await request.json().catch(() => null)) as { content?: unknown } | null;
+    const content = normalizeText(body?.content);
+
+    if (!content) {
+      return NextResponse.json({ error: "待办内容不能为空" }, { status: 400 });
+    }
+
+    const task = await createTodo(id, content);
+    if (!task) {
+      return NextResponse.json({ error: "任务不存在" }, { status: 404 });
+    }
+
+    return NextResponse.json({ task }, { status: 201 });
+  } catch (error) {
+    return apiErrorResponse(error);
   }
-
-  const body = (await request.json().catch(() => null)) as { content?: unknown } | null;
-  const content = normalizeText(body?.content);
-
-  if (!content) {
-    return NextResponse.json({ error: "待办内容不能为空" }, { status: 400 });
-  }
-
-  const task = createTodo(id, content);
-  if (!task) {
-    return NextResponse.json({ error: "任务不存在" }, { status: 404 });
-  }
-
-  return NextResponse.json({ task }, { status: 201 });
 }

@@ -1,6 +1,3 @@
-import { DatabaseSync } from "node:sqlite";
-import { ensureTasksDbLocation } from "./app-paths";
-
 export const TASK_STATUSES = ["未开始", "进行中", "挂起", "已完成"] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 export const TASK_PRIORITIES = ["P0", "P1", "P2", "P3"] as const;
@@ -20,16 +17,6 @@ export type ProgressRecord = {
   id: number;
   taskId: number;
   content: string;
-  createdAt: string;
-};
-
-export type EditHistory = {
-  id: number;
-  taskId: number;
-  actionType: string;
-  fieldName: string;
-  oldValue: string | null;
-  newValue: string | null;
   createdAt: string;
 };
 
@@ -66,7 +53,7 @@ type TodoRow = {
   id: number;
   task_id: number;
   content: string;
-  completed: 0 | 1;
+  completed: boolean | 0 | 1;
   sort_order: number;
   created_at: string;
   updated_at: string;
@@ -79,140 +66,100 @@ type ProgressRow = {
   created_at: string;
 };
 
-type EditHistoryRow = {
-  id: number;
-  task_id: number;
-  action_type: string;
-  field_name: string;
-  old_value: string | null;
-  new_value: string | null;
-  created_at: string;
+type SupabaseRequestInit = Omit<RequestInit, "body" | "headers"> & {
+  body?: unknown;
+  headers?: HeadersInit;
 };
 
-const globalForDb = globalThis as unknown as { taskManagerDb?: DatabaseSync };
+function getSupabaseConfig() {
+  const url = process.env.SUPABASE_URL?.replace(/\/$/, "");
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-function ensureTaskStatusConstraint(connection: DatabaseSync) {
-  const table = connection
-    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'")
-    .get() as { sql?: string } | undefined;
-
-  if (table?.sql?.includes("'挂起'")) {
-    return;
+  if (!url || !serviceRoleKey) {
+    throw new Error("Supabase 未配置：请在 .env.local 中设置 SUPABASE_URL 和 SUPABASE_SERVICE_ROLE_KEY");
   }
 
-  connection.exec("PRAGMA foreign_keys = OFF");
-  connection.exec("BEGIN IMMEDIATE");
-
-  try {
-    connection.exec(`
-      CREATE TABLE tasks_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        goal TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('未开始', '进行中', '挂起', '已完成')) DEFAULT '未开始',
-        priority TEXT NOT NULL CHECK (priority IN ('P0', 'P1', 'P2', 'P3')) DEFAULT 'P2',
-        deadline_at TEXT,
-        created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
-      );
-
-      INSERT INTO tasks_new (id, goal, status, priority, deadline_at, created_at, updated_at)
-      SELECT
-        id,
-        goal,
-        CASE
-          WHEN status IN ('未开始', '进行中', '挂起', '已完成') THEN status
-          ELSE '未开始'
-        END,
-        CASE
-          WHEN priority IN ('P0', 'P1', 'P2', 'P3') THEN priority
-          ELSE 'P2'
-        END,
-        deadline_at,
-        created_at,
-        updated_at
-      FROM tasks;
-
-      DROP TABLE tasks;
-      ALTER TABLE tasks_new RENAME TO tasks;
-    `);
-    connection.exec("COMMIT");
-  } catch (error) {
-    connection.exec("ROLLBACK");
-    throw error;
-  } finally {
-    connection.exec("PRAGMA foreign_keys = ON");
-  }
+  return {
+    restUrl: `${url}/rest/v1`,
+    serviceRoleKey
+  };
 }
 
-function getDb() {
-  if (!globalForDb.taskManagerDb) {
-    const dbPath = ensureTasksDbLocation();
-    const connection = new DatabaseSync(dbPath, {
-      open: true
-    });
+async function supabaseRequest<T>(path: string, init: SupabaseRequestInit = {}): Promise<T> {
+  const { restUrl, serviceRoleKey } = getSupabaseConfig();
+  const response = await fetch(`${restUrl}${path}`, {
+    ...init,
+    cache: "no-store",
+    headers: {
+      apikey: serviceRoleKey,
+      Authorization: `Bearer ${serviceRoleKey}`,
+      "Content-Type": "application/json",
+      ...init.headers
+    },
+    body: init.body === undefined ? undefined : JSON.stringify(init.body)
+  });
 
-    connection.exec("PRAGMA journal_mode = WAL");
-    connection.exec("PRAGMA foreign_keys = ON");
-    connection.exec(`
-      CREATE TABLE IF NOT EXISTS tasks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        goal TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('未开始', '进行中', '挂起', '已完成')) DEFAULT '未开始',
-        priority TEXT NOT NULL CHECK (priority IN ('P0', 'P1', 'P2', 'P3')) DEFAULT 'P2',
-        deadline_at TEXT,
-        created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
-      );
+  if (!response.ok) {
+    const message = await response.text().catch(() => "");
+    let detail = message;
 
-      CREATE TABLE IF NOT EXISTS todo_items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        task_id INTEGER NOT NULL,
-        content TEXT NOT NULL,
-        completed INTEGER NOT NULL DEFAULT 0,
-        sort_order INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
-        FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
-      );
-
-      CREATE TABLE IF NOT EXISTS progress_records (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        task_id INTEGER NOT NULL,
-        content TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
-        FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
-      );
-
-      CREATE TABLE IF NOT EXISTS edit_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        task_id INTEGER NOT NULL,
-        action_type TEXT NOT NULL,
-        field_name TEXT NOT NULL,
-        old_value TEXT,
-        new_value TEXT,
-        created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
-        FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
-      );
-    `);
-
-    const taskColumns = connection.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
-    if (!taskColumns.some((column) => column.name === "deadline_at")) {
-      connection.exec("ALTER TABLE tasks ADD COLUMN deadline_at TEXT");
+    try {
+      const payload = JSON.parse(message) as { message?: string };
+      detail = payload.message || message;
+    } catch {
+      detail = message;
     }
-    if (!taskColumns.some((column) => column.name === "priority")) {
-      connection.exec("ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'P2'");
-    }
-    ensureTaskStatusConstraint(connection);
 
-    globalForDb.taskManagerDb = connection;
+    if (detail.includes("row-level security")) {
+      throw new Error(
+        "Supabase RLS 阻止写入：请确认 .env.local 中的 SUPABASE_SERVICE_ROLE_KEY 是真正的 Secret/service_role key，或在 Supabase 为相关表添加写入策略。"
+      );
+    }
+
+    throw new Error(`Supabase 请求失败：${response.status} ${detail}`);
   }
 
-  return globalForDb.taskManagerDb;
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
+  const text = await response.text();
+  if (!text) {
+    return undefined as T;
+  }
+
+  return JSON.parse(text) as T;
+}
+
+function buildQuery(params: Record<string, string | number | boolean | undefined>) {
+  const query = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) {
+      query.set(key, String(value));
+    }
+  }
+
+  const value = query.toString();
+  return value ? `?${value}` : "";
+}
+
+function currentTimestamp() {
+  return new Date().toISOString();
+}
+
+function timeValue(value: string | null) {
+  if (!value) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const timestamp = new Date(value).getTime();
+  return Number.isNaN(timestamp) ? Number.POSITIVE_INFINITY : timestamp;
 }
 
 function mapTask(row: TaskRow): Omit<TaskDetail, "todos" | "progressRecords"> {
   return {
-    id: row.id,
+    id: Number(row.id),
     goal: row.goal,
     status: row.status,
     priority: row.priority,
@@ -224,11 +171,11 @@ function mapTask(row: TaskRow): Omit<TaskDetail, "todos" | "progressRecords"> {
 
 function mapTodo(row: TodoRow): TodoItem {
   return {
-    id: row.id,
-    taskId: row.task_id,
+    id: Number(row.id),
+    taskId: Number(row.task_id),
     content: row.content,
     completed: Boolean(row.completed),
-    sortOrder: row.sort_order,
+    sortOrder: Number(row.sort_order),
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -236,36 +183,11 @@ function mapTodo(row: TodoRow): TodoItem {
 
 function mapProgress(row: ProgressRow): ProgressRecord {
   return {
-    id: row.id,
-    taskId: row.task_id,
+    id: Number(row.id),
+    taskId: Number(row.task_id),
     content: row.content,
     createdAt: row.created_at
   };
-}
-
-function mapHistory(row: EditHistoryRow): EditHistory {
-  return {
-    id: row.id,
-    taskId: row.task_id,
-    actionType: row.action_type,
-    fieldName: row.field_name,
-    oldValue: row.old_value,
-    newValue: row.new_value,
-    createdAt: row.created_at
-  };
-}
-
-function transaction<T>(callback: () => T): T {
-  const connection = getDb();
-  connection.exec("BEGIN IMMEDIATE");
-  try {
-    const result = callback();
-    connection.exec("COMMIT");
-    return result;
-  } catch (error) {
-    connection.exec("ROLLBACK");
-    throw error;
-  }
 }
 
 export function isTaskStatus(value: unknown): value is TaskStatus {
@@ -305,81 +227,85 @@ export function normalizeDeadline(value: unknown): string | null {
   )}:${pad(parsed.getMinutes())}:00`;
 }
 
-export function getTasks(): TaskListItem[] {
-  const rows = getDb()
-    .prepare(
-      `
-      SELECT
-        tasks.id,
-        tasks.goal,
-        tasks.status,
-        tasks.priority,
-        tasks.deadline_at,
-        tasks.created_at,
-        tasks.updated_at,
-        COUNT(todo_items.id) AS todo_total,
-        COALESCE(SUM(CASE WHEN todo_items.completed = 1 THEN 1 ELSE 0 END), 0) AS todo_completed,
-        (
-          SELECT content
-          FROM progress_records
-          WHERE progress_records.task_id = tasks.id
-          ORDER BY datetime(created_at) DESC, id DESC
-          LIMIT 1
-        ) AS latest_progress,
-        (
-          SELECT created_at
-          FROM progress_records
-          WHERE progress_records.task_id = tasks.id
-          ORDER BY datetime(created_at) DESC, id DESC
-          LIMIT 1
-        ) AS latest_progress_at
-      FROM tasks
-      LEFT JOIN todo_items ON todo_items.task_id = tasks.id
-      GROUP BY tasks.id
-      ORDER BY
-        CASE WHEN tasks.status = '挂起' THEN 1 ELSE 0 END ASC,
-        CASE tasks.priority
-          WHEN 'P0' THEN 0
-          WHEN 'P1' THEN 1
-          WHEN 'P2' THEN 2
-          WHEN 'P3' THEN 3
-          ELSE 4
-        END ASC,
-        CASE WHEN tasks.deadline_at IS NULL THEN 1 ELSE 0 END ASC,
-        datetime(tasks.deadline_at) ASC,
-        datetime(tasks.updated_at) DESC,
-        tasks.id DESC
-    `
-    )
-    .all() as Array<TaskRow & {
-    todo_total: number;
-    todo_completed: number;
-    latest_progress: string | null;
-    latest_progress_at: string | null;
-  }>;
+export async function getTasks(): Promise<TaskListItem[]> {
+  const [taskRows, todoRows, progressRows] = await Promise.all([
+    supabaseRequest<TaskRow[]>("/tasks?select=*"),
+    supabaseRequest<TodoRow[]>("/todo_items?select=id,task_id,completed"),
+    supabaseRequest<ProgressRow[]>("/progress_records?select=id,task_id,content,created_at")
+  ]);
 
-  return rows.map((row) => ({
-    ...mapTask(row),
-    todoTotal: row.todo_total,
-    todoCompleted: row.todo_completed,
-    latestProgress: row.latest_progress,
-    latestProgressAt: row.latest_progress_at
-  }));
+  const todosByTask = new Map<number, TodoRow[]>();
+  for (const todo of todoRows) {
+    const taskId = Number(todo.task_id);
+    todosByTask.set(taskId, [...(todosByTask.get(taskId) || []), todo]);
+  }
+
+  const latestProgressByTask = new Map<number, ProgressRow>();
+  for (const progress of progressRows) {
+    const taskId = Number(progress.task_id);
+    const current = latestProgressByTask.get(taskId);
+    const isNewer =
+      !current ||
+      timeValue(progress.created_at) > timeValue(current.created_at) ||
+      (progress.created_at === current.created_at && Number(progress.id) > Number(current.id));
+
+    if (isNewer) {
+      latestProgressByTask.set(taskId, progress);
+    }
+  }
+
+  const priorityRank = new Map<TaskPriority, number>(TASK_PRIORITIES.map((priority, index) => [priority, index]));
+
+  return taskRows
+    .map((row) => {
+      const todos = todosByTask.get(Number(row.id)) || [];
+      const latestProgress = latestProgressByTask.get(Number(row.id));
+
+      return {
+        ...mapTask(row),
+        todoTotal: todos.length,
+        todoCompleted: todos.filter((todo) => Boolean(todo.completed)).length,
+        latestProgress: latestProgress?.content || null,
+        latestProgressAt: latestProgress?.created_at || null
+      };
+    })
+    .sort((left, right) => {
+      const holdRank = Number(left.status === "挂起") - Number(right.status === "挂起");
+      if (holdRank !== 0) {
+        return holdRank;
+      }
+
+      const priorityDelta = (priorityRank.get(left.priority) ?? 4) - (priorityRank.get(right.priority) ?? 4);
+      if (priorityDelta !== 0) {
+        return priorityDelta;
+      }
+
+      const deadlineDelta = timeValue(left.deadlineAt) - timeValue(right.deadlineAt);
+      if (deadlineDelta !== 0) {
+        return deadlineDelta;
+      }
+
+      const updatedDelta = timeValue(right.updatedAt) - timeValue(left.updatedAt);
+      return updatedDelta === 0 ? right.id - left.id : updatedDelta;
+    });
 }
 
-export function getTask(taskId: number): TaskDetail | null {
-  const row = getDb().prepare("SELECT * FROM tasks WHERE id = ?").get(taskId) as TaskRow | undefined;
+export async function getTask(taskId: number): Promise<TaskDetail | null> {
+  const taskRows = await supabaseRequest<TaskRow[]>(`/tasks${buildQuery({ select: "*", id: `eq.${taskId}`, limit: 1 })}`);
+  const row = taskRows[0];
 
   if (!row) {
     return null;
   }
 
-  const todos = getDb()
-    .prepare("SELECT * FROM todo_items WHERE task_id = ? ORDER BY sort_order ASC, id ASC")
-    .all(taskId) as TodoRow[];
-  const progressRecords = getDb()
-    .prepare("SELECT * FROM progress_records WHERE task_id = ? ORDER BY datetime(created_at) DESC, id DESC")
-    .all(taskId) as ProgressRow[];
+  const [todos, progressRecords] = await Promise.all([
+    supabaseRequest<TodoRow[]>(
+      `/todo_items${buildQuery({ select: "*", task_id: `eq.${taskId}`, order: "sort_order.asc,id.asc" })}`
+    ),
+    supabaseRequest<ProgressRow[]>(
+      `/progress_records${buildQuery({ select: "*", task_id: `eq.${taskId}`, order: "created_at.desc,id.desc" })}`
+    )
+  ]);
 
   return {
     ...mapTask(row),
@@ -388,205 +314,195 @@ export function getTask(taskId: number): TaskDetail | null {
   };
 }
 
-export function getHistory(taskId: number): EditHistory[] {
-  const rows = getDb()
-    .prepare("SELECT * FROM edit_history WHERE task_id = ? ORDER BY datetime(created_at) DESC, id DESC")
-    .all(taskId) as EditHistoryRow[];
-
-  return rows.map(mapHistory);
-}
-
-export function createTask(
+export async function createTask(
   goal: string,
   todos: string[],
   deadlineAt: string | null,
   priority: TaskPriority
-): TaskDetail {
-  const create = () =>
-    transaction(() => {
-      const taskResult = getDb()
-        .prepare("INSERT INTO tasks (goal, deadline_at, priority) VALUES (?, ?, ?)")
-        .run(goal, deadlineAt, priority);
-      const taskId = Number(taskResult.lastInsertRowid);
+): Promise<TaskDetail> {
+  const [task] = await supabaseRequest<TaskRow[]>("/tasks", {
+    method: "POST",
+    headers: {
+      Prefer: "return=representation"
+    },
+    body: {
+      goal,
+      deadline_at: deadlineAt,
+      priority
+    }
+  });
+  const taskId = Number(task.id);
 
-      insertHistory(taskId, "create_task", "goal", null, goal);
-      insertHistory(taskId, "create_task", "priority", null, priority);
-      if (deadlineAt) {
-        insertHistory(taskId, "create_task", "deadline_at", null, deadlineAt);
+  for (const [index, todo] of todos.entries()) {
+    await supabaseRequest<TodoRow[]>("/todo_items", {
+      method: "POST",
+      headers: {
+        Prefer: "return=representation"
+      },
+      body: {
+        task_id: taskId,
+        content: todo,
+        sort_order: index
       }
-
-      const todoInsert = getDb().prepare(
-        "INSERT INTO todo_items (task_id, content, sort_order) VALUES (?, ?, ?)"
-      );
-
-      todos.forEach((todo, index) => {
-        const result = todoInsert.run(taskId, todo, index);
-        insertHistory(taskId, "create_todo", `todo:${Number(result.lastInsertRowid)}:content`, null, todo);
-      });
-
-      return taskId;
     });
+  }
 
-  return getTask(create()) as TaskDetail;
+  return (await getTask(taskId)) as TaskDetail;
 }
 
-export function updateTask(
+export async function updateTask(
   taskId: number,
   values: { goal?: string; status?: TaskStatus; deadlineAt?: string | null; priority?: TaskPriority }
-): TaskDetail | null {
-  const update = () =>
-    transaction(() => {
-      const existing = getTask(taskId);
-      if (!existing) {
-        return false;
-      }
+): Promise<TaskDetail | null> {
+  const existing = await getTask(taskId);
+  if (!existing) {
+    return null;
+  }
 
-      if (values.goal !== undefined && values.goal !== existing.goal) {
-        getDb().prepare("UPDATE tasks SET goal = ?, updated_at = datetime('now', 'localtime') WHERE id = ?").run(
-          values.goal,
-          taskId
-        );
-        insertHistory(taskId, "update_task", "goal", existing.goal, values.goal);
-      }
+  const updateValues: Partial<Pick<TaskRow, "goal" | "status" | "deadline_at" | "priority" | "updated_at">> = {};
 
-      if (values.status !== undefined && values.status !== existing.status) {
-        getDb().prepare("UPDATE tasks SET status = ?, updated_at = datetime('now', 'localtime') WHERE id = ?").run(
-          values.status,
-          taskId
-        );
-        insertHistory(taskId, "update_task", "status", existing.status, values.status);
-      }
+  if (values.goal !== undefined && values.goal !== existing.goal) {
+    updateValues.goal = values.goal;
+  }
 
-      if (values.deadlineAt !== undefined && values.deadlineAt !== existing.deadlineAt) {
-        getDb()
-          .prepare("UPDATE tasks SET deadline_at = ?, updated_at = datetime('now', 'localtime') WHERE id = ?")
-          .run(values.deadlineAt, taskId);
-        insertHistory(taskId, "update_task", "deadline_at", existing.deadlineAt, values.deadlineAt);
-      }
+  if (values.status !== undefined && values.status !== existing.status) {
+    updateValues.status = values.status;
+  }
 
-      if (values.priority !== undefined && values.priority !== existing.priority) {
-        getDb()
-          .prepare("UPDATE tasks SET priority = ?, updated_at = datetime('now', 'localtime') WHERE id = ?")
-          .run(values.priority, taskId);
-        insertHistory(taskId, "update_task", "priority", existing.priority, values.priority);
-      }
+  if (values.deadlineAt !== undefined && values.deadlineAt !== existing.deadlineAt) {
+    updateValues.deadline_at = values.deadlineAt;
+  }
 
-      return true;
+  if (values.priority !== undefined && values.priority !== existing.priority) {
+    updateValues.priority = values.priority;
+  }
+
+  if (Object.keys(updateValues).length > 0) {
+    await supabaseRequest(`/tasks${buildQuery({ id: `eq.${taskId}` })}`, {
+      method: "PATCH",
+      headers: {
+        Prefer: "return=minimal"
+      },
+      body: {
+        ...updateValues,
+        updated_at: currentTimestamp()
+      }
     });
+  }
 
-  return update() ? getTask(taskId) : null;
+  return getTask(taskId);
 }
 
-export function createTodo(taskId: number, content: string): TaskDetail | null {
-  const create = () =>
-    transaction(() => {
-      const task = getTask(taskId);
-      if (!task) {
-        return false;
-      }
+export async function createTodo(taskId: number, content: string): Promise<TaskDetail | null> {
+  const task = await getTask(taskId);
+  if (!task) {
+    return null;
+  }
 
-      const maxSortOrder = getDb()
-        .prepare("SELECT COALESCE(MAX(sort_order), -1) AS max_sort_order FROM todo_items WHERE task_id = ?")
-        .get(taskId) as { max_sort_order: number };
-      const result = getDb()
-        .prepare("INSERT INTO todo_items (task_id, content, sort_order) VALUES (?, ?, ?)")
-        .run(taskId, content, maxSortOrder.max_sort_order + 1);
+  const maxSortOrder = task.todos.reduce((max, todo) => Math.max(max, todo.sortOrder), -1);
+  await supabaseRequest<TodoRow[]>("/todo_items", {
+    method: "POST",
+    headers: {
+      Prefer: "return=minimal"
+    },
+    body: {
+      task_id: taskId,
+      content,
+      sort_order: maxSortOrder + 1
+    }
+  });
 
-      getDb().prepare("UPDATE tasks SET updated_at = datetime('now', 'localtime') WHERE id = ?").run(taskId);
-      insertHistory(taskId, "create_todo", `todo:${Number(result.lastInsertRowid)}:content`, null, content);
-      return true;
-    });
-
-  return create() ? getTask(taskId) : null;
+  await touchTask(taskId);
+  return getTask(taskId);
 }
 
-export function updateTodo(
+export async function updateTodo(
   todoId: number,
   values: { content?: string; completed?: boolean }
-): TaskDetail | null {
-  const update = () =>
-    transaction(() => {
-      const row = getDb().prepare("SELECT * FROM todo_items WHERE id = ?").get(todoId) as TodoRow | undefined;
-      if (!row) {
-        return null;
-      }
+): Promise<TaskDetail | null> {
+  const rows = await supabaseRequest<TodoRow[]>(
+    `/todo_items${buildQuery({ select: "*", id: `eq.${todoId}`, limit: 1 })}`
+  );
+  const row = rows[0];
+  if (!row) {
+    return null;
+  }
 
-      if (values.content !== undefined && values.content !== row.content) {
-        getDb().prepare("UPDATE todo_items SET content = ?, updated_at = datetime('now', 'localtime') WHERE id = ?").run(
-          values.content,
-          todoId
-        );
-        insertHistory(row.task_id, "update_todo", `todo:${todoId}:content`, row.content, values.content);
-      }
+  const updateValues: Partial<Pick<TodoRow, "content" | "completed" | "updated_at">> = {};
 
-      const completedNumber = values.completed === undefined ? undefined : values.completed ? 1 : 0;
-      if (completedNumber !== undefined && completedNumber !== row.completed) {
-        getDb().prepare("UPDATE todo_items SET completed = ?, updated_at = datetime('now', 'localtime') WHERE id = ?").run(
-          completedNumber,
-          todoId
-        );
-        insertHistory(
-          row.task_id,
-          "update_todo",
-          `todo:${todoId}:completed`,
-          row.completed ? "已完成" : "未完成",
-          completedNumber ? "已完成" : "未完成"
-        );
-      }
+  if (values.content !== undefined && values.content !== row.content) {
+    updateValues.content = values.content;
+  }
 
-      getDb().prepare("UPDATE tasks SET updated_at = datetime('now', 'localtime') WHERE id = ?").run(row.task_id);
-      return row.task_id;
+  if (values.completed !== undefined && values.completed !== Boolean(row.completed)) {
+    updateValues.completed = values.completed;
+  }
+
+  if (Object.keys(updateValues).length > 0) {
+    await supabaseRequest(`/todo_items${buildQuery({ id: `eq.${todoId}` })}`, {
+      method: "PATCH",
+      headers: {
+        Prefer: "return=minimal"
+      },
+      body: {
+        ...updateValues,
+        updated_at: currentTimestamp()
+      }
     });
 
-  const taskId = update();
-  return taskId ? getTask(taskId) : null;
+    await touchTask(Number(row.task_id));
+  }
+
+  return getTask(Number(row.task_id));
 }
 
-export function deleteTodo(todoId: number): TaskDetail | null {
-  const remove = () =>
-    transaction(() => {
-      const row = getDb().prepare("SELECT * FROM todo_items WHERE id = ?").get(todoId) as TodoRow | undefined;
-      if (!row) {
-        return null;
-      }
+export async function deleteTodo(todoId: number): Promise<TaskDetail | null> {
+  const rows = await supabaseRequest<TodoRow[]>(
+    `/todo_items${buildQuery({ select: "*", id: `eq.${todoId}`, limit: 1 })}`
+  );
+  const row = rows[0];
+  if (!row) {
+    return null;
+  }
 
-      getDb().prepare("DELETE FROM todo_items WHERE id = ?").run(todoId);
-      getDb().prepare("UPDATE tasks SET updated_at = datetime('now', 'localtime') WHERE id = ?").run(row.task_id);
-      insertHistory(row.task_id, "delete_todo", `todo:${todoId}:content`, row.content, null);
-      return row.task_id;
-    });
-
-  const taskId = remove();
-  return taskId ? getTask(taskId) : null;
+  await supabaseRequest(`/todo_items${buildQuery({ id: `eq.${todoId}` })}`, {
+    method: "DELETE",
+    headers: {
+      Prefer: "return=minimal"
+    }
+  });
+  await touchTask(Number(row.task_id));
+  return getTask(Number(row.task_id));
 }
 
-export function createProgress(taskId: number, content: string): TaskDetail | null {
-  const create = () =>
-    transaction(() => {
-      const task = getTask(taskId);
-      if (!task) {
-        return false;
-      }
+export async function createProgress(taskId: number, content: string): Promise<TaskDetail | null> {
+  const task = await getTask(taskId);
+  if (!task) {
+    return null;
+  }
 
-      getDb().prepare("INSERT INTO progress_records (task_id, content) VALUES (?, ?)").run(taskId, content);
-      getDb().prepare("UPDATE tasks SET updated_at = datetime('now', 'localtime') WHERE id = ?").run(taskId);
-      return true;
-    });
-
-  return create() ? getTask(taskId) : null;
+  await supabaseRequest("/progress_records", {
+    method: "POST",
+    headers: {
+      Prefer: "return=minimal"
+    },
+    body: {
+      task_id: taskId,
+      content
+    }
+  });
+  await touchTask(taskId);
+  return getTask(taskId);
 }
 
-function insertHistory(
-  taskId: number,
-  actionType: string,
-  fieldName: string,
-  oldValue: string | null,
-  newValue: string | null
-) {
-  getDb().prepare(
-    `
-    INSERT INTO edit_history (task_id, action_type, field_name, old_value, new_value)
-    VALUES (?, ?, ?, ?, ?)
-  `
-  ).run(taskId, actionType, fieldName, oldValue, newValue);
+async function touchTask(taskId: number) {
+  await supabaseRequest(`/tasks${buildQuery({ id: `eq.${taskId}` })}`, {
+    method: "PATCH",
+    headers: {
+      Prefer: "return=minimal"
+    },
+    body: {
+      updated_at: currentTimestamp()
+    }
+  });
 }

@@ -494,8 +494,7 @@ select:focus {
 .task-card-main span,
 .muted,
 .panel-heading span,
-.timeline-item time,
-.history-item time {
+.timeline-item time {
   color: var(--muted);
 }
 
@@ -1239,67 +1238,6 @@ select:focus {
   color: var(--dark-navy);
 }
 
-.history-list {
-  display: grid;
-  gap: 10px;
-  margin-top: 16px;
-  max-height: 620px;
-  overflow-y: auto;
-  padding-right: 6px;
-}
-
-.history-task-context {
-  background: var(--surface-muted);
-  border-radius: 8px;
-  display: grid;
-  gap: 6px;
-  margin-top: 16px;
-  padding: 12px;
-}
-
-.history-task-context span,
-.history-task-line {
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.history-task-context strong {
-  overflow-wrap: anywhere;
-}
-
-.history-item {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 16px;
-}
-
-.history-task-line {
-  display: block;
-  margin: 0 0 8px;
-  overflow-wrap: anywhere;
-}
-
-.history-item div,
-.history-change {
-  align-items: center;
-  display: flex;
-  gap: 10px;
-  justify-content: space-between;
-}
-
-.history-change {
-  justify-content: flex-start;
-  margin: 10px 0 0;
-}
-
-.history-change span {
-  background: var(--surface-muted);
-  border-radius: 8px;
-  max-width: 45%;
-  overflow-wrap: anywhere;
-  padding: 8px;
-}
-
 .spin {
   animation: spin 1s linear infinite;
 }
@@ -1387,15 +1325,6 @@ select:focus {
     font-size: 22px;
   }
 
-  .history-item div,
-  .history-item p {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .history-change span {
-    max-width: 100%;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

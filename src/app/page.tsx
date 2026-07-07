@@ -8,7 +8,6 @@ import {
   ChevronRight,
   Circle,
   Clock3,
-  FileClock,
   Folder,
   ListChecks,
   Loader2,
@@ -64,16 +63,6 @@ type TaskListItem = Omit<TaskDetail, "todos" | "progressRecords"> & {
   todoCompleted: number;
   latestProgress: string | null;
   latestProgressAt: string | null;
-};
-
-type EditHistory = {
-  id: number;
-  taskId: number;
-  actionType: string;
-  fieldName: string;
-  oldValue: string | null;
-  newValue: string | null;
-  createdAt: string;
 };
 
 type TaskCelebration = {
@@ -147,34 +136,6 @@ function formatElapsed(totalSeconds: number) {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
-function historyLabel(item: EditHistory) {
-  if (item.fieldName === "goal") {
-    return "任务目标";
-  }
-
-  if (item.fieldName === "status") {
-    return "任务状态";
-  }
-
-  if (item.fieldName === "deadline_at") {
-    return "DDL 时间";
-  }
-
-  if (item.fieldName === "priority") {
-    return "任务优先级";
-  }
-
-  if (item.fieldName.includes(":content")) {
-    return "待办内容";
-  }
-
-  if (item.fieldName.includes(":completed")) {
-    return "待办状态";
-  }
-
-  return item.fieldName;
-}
-
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,
@@ -216,8 +177,6 @@ export default function Home() {
     已完成: true,
     挂起: true
   });
-  const [history, setHistory] = useState<EditHistory[]>([]);
-  const [historyOpen, setHistoryOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -231,8 +190,6 @@ export default function Home() {
   const createTriggerRef = useRef<HTMLButtonElement>(null);
   const createDialogRef = useRef<HTMLElement>(null);
   const createGoalRef = useRef<HTMLTextAreaElement>(null);
-  const historyDialogRef = useRef<HTMLElement>(null);
-  const historyTriggerRef = useRef<HTMLButtonElement>(null);
   const focusDialogRef = useRef<HTMLElement>(null);
   const focusExitRef = useRef<HTMLButtonElement>(null);
   const taskEditorRef = useRef<HTMLElement>(null);
@@ -367,7 +324,7 @@ export default function Home() {
   }, [task?.id]);
 
   useEffect(() => {
-    if (!createModalOpen && !historyOpen && !focusMode && !taskCelebration) {
+    if (!createModalOpen && !focusMode && !taskCelebration) {
       return;
     }
 
@@ -375,7 +332,6 @@ export default function Home() {
     document.body.style.overflow = "hidden";
     const frame = window.requestAnimationFrame(() => {
       if (createModalOpen) createGoalRef.current?.focus();
-      if (historyOpen) historyDialogRef.current?.querySelector<HTMLElement>("button")?.focus();
       if (focusMode) focusExitRef.current?.focus();
       if (taskCelebration) celebrationRestRef.current?.focus();
     });
@@ -385,7 +341,6 @@ export default function Home() {
       if (focusMode) setFocusMode(false);
       else if (taskCelebration) setTaskCelebration(null);
       else if (createModalOpen) setCreateModalOpen(false);
-      else if (historyOpen) setHistoryOpen(false);
     }
 
     document.addEventListener("keydown", closeOnEscape);
@@ -394,9 +349,8 @@ export default function Home() {
       document.body.style.overflow = previousOverflow;
       document.removeEventListener("keydown", closeOnEscape);
       if (createModalOpen) createTriggerRef.current?.focus();
-      if (historyOpen) historyTriggerRef.current?.focus();
     };
-  }, [createModalOpen, focusMode, historyOpen, taskCelebration]);
+  }, [createModalOpen, focusMode, taskCelebration]);
 
   function trapDialogFocus(event: KeyboardEvent<HTMLElement>, container: HTMLElement | null) {
     if (event.key !== "Tab" || !container) return;
@@ -584,18 +538,6 @@ export default function Home() {
     }
   }
 
-  async function openHistory() {
-    if (!task) {
-      return;
-    }
-
-    await run(async () => {
-      const data = await requestJson<{ history: EditHistory[] }>(`/api/tasks/${task.id}/history`);
-      setHistory(data.history);
-      setHistoryOpen(true);
-    });
-  }
-
   function renderTaskCard(item: TaskListItem) {
     const progress = getTimeProgress(item);
     return (
@@ -725,10 +667,6 @@ export default function Home() {
                 <p className="eyebrow">任务 #{task.id}</p>
                 <h2>{task.goal}</h2>
               </div>
-              <button ref={historyTriggerRef} className="ghost-button" type="button" onClick={openHistory}>
-                <FileClock aria-hidden="true" />
-                编辑记录
-              </button>
             </div>
 
             <section className="next-action" aria-labelledby="next-action-title">
@@ -1022,57 +960,6 @@ export default function Home() {
                 先记下来
               </button>
             </form>
-          </section>
-        </div>
-      ) : null}
-
-      {historyOpen ? (
-        <div className="modal-backdrop" role="presentation">
-          <section
-            ref={historyDialogRef}
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="history-title"
-            onKeyDown={(event) => trapDialogFocus(event, historyDialogRef.current)}
-          >
-            <div className="modal-header">
-              <h2 id="history-title">编辑记录</h2>
-              <button className="icon-button" type="button" aria-label="关闭" onClick={() => setHistoryOpen(false)}>
-                <X aria-hidden="true" />
-              </button>
-            </div>
-
-            {task ? (
-              <div className="history-task-context">
-                <span>关联任务</span>
-                <strong>
-                  #{task.id} {task.goal}
-                </strong>
-              </div>
-            ) : null}
-
-            <div className="history-list">
-              {history.length === 0 ? <p className="muted">暂无编辑记录</p> : null}
-              {history.map((item) => (
-                <article className="history-item" key={item.id}>
-                  {task ? (
-                    <p className="history-task-line">
-                      修改任务：#{task.id} {task.goal}
-                    </p>
-                  ) : null}
-                  <div>
-                    <strong>{historyLabel(item)}</strong>
-                    <time>{formatTime(item.createdAt)}</time>
-                  </div>
-                  <p className="history-change">
-                    <span>{item.oldValue ?? "空"}</span>
-                    <b>→</b>
-                    <span>{item.newValue ?? "空"}</span>
-                  </p>
-                </article>
-              ))}
-            </div>
           </section>
         </div>
       ) : null}
