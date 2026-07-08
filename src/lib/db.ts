@@ -6,6 +6,7 @@ export type TaskPriority = (typeof TASK_PRIORITIES)[number];
 export type TodoItem = {
   id: number;
   taskId: number;
+  userId: string;
   content: string;
   completed: boolean;
   sortOrder: number;
@@ -16,12 +17,22 @@ export type TodoItem = {
 export type ProgressRecord = {
   id: number;
   taskId: number;
+  userId: string;
   content: string;
   createdAt: string;
 };
 
+export type AppUser = {
+  id: string;
+  authUserId: string | null;
+  email: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type TaskDetail = {
   id: number;
+  userId: string;
   goal: string;
   status: TaskStatus;
   priority: TaskPriority;
@@ -41,6 +52,7 @@ export type TaskListItem = Omit<TaskDetail, "todos" | "progressRecords"> & {
 
 type TaskRow = {
   id: number;
+  user_id: string;
   goal: string;
   status: TaskStatus;
   priority: TaskPriority;
@@ -52,6 +64,7 @@ type TaskRow = {
 type TodoRow = {
   id: number;
   task_id: number;
+  user_id: string;
   content: string;
   completed: boolean | 0 | 1;
   sort_order: number;
@@ -62,8 +75,17 @@ type TodoRow = {
 type ProgressRow = {
   id: number;
   task_id: number;
+  user_id: string;
   content: string;
   created_at: string;
+};
+
+type AppUserRow = {
+  id: string;
+  auth_user_id: string | null;
+  email: string;
+  created_at: string;
+  updated_at: string;
 };
 
 type SupabaseRequestInit = Omit<RequestInit, "body" | "headers"> & {
@@ -116,6 +138,10 @@ async function supabaseRequest<T>(path: string, init: SupabaseRequestInit = {}):
       );
     }
 
+    if (detail.includes("app_users") || detail.includes("user_id") || detail.includes("schema cache")) {
+      throw new Error("Supabase 表结构未更新：请先执行 supabase/migrations/20260707_email_login_user_scope.sql。");
+    }
+
     throw new Error(`Supabase 请求失败：${response.status} ${detail}`);
   }
 
@@ -160,6 +186,7 @@ function timeValue(value: string | null) {
 function mapTask(row: TaskRow): Omit<TaskDetail, "todos" | "progressRecords"> {
   return {
     id: Number(row.id),
+    userId: row.user_id,
     goal: row.goal,
     status: row.status,
     priority: row.priority,
@@ -173,6 +200,7 @@ function mapTodo(row: TodoRow): TodoItem {
   return {
     id: Number(row.id),
     taskId: Number(row.task_id),
+    userId: row.user_id,
     content: row.content,
     completed: Boolean(row.completed),
     sortOrder: Number(row.sort_order),
@@ -185,8 +213,19 @@ function mapProgress(row: ProgressRow): ProgressRecord {
   return {
     id: Number(row.id),
     taskId: Number(row.task_id),
+    userId: row.user_id,
     content: row.content,
     createdAt: row.created_at
+  };
+}
+
+function mapUser(row: AppUserRow): AppUser {
+  return {
+    id: row.id,
+    authUserId: row.auth_user_id,
+    email: row.email,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
   };
 }
 
@@ -200,6 +239,48 @@ export function isTaskPriority(value: unknown): value is TaskPriority {
 
 export function normalizeText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+export async function syncAuthUser(authUserId: string, email: string): Promise<AppUser> {
+  const existing = await supabaseRequest<AppUserRow[]>(
+    `/app_users${buildQuery({ select: "*", email: `eq.${email}`, limit: 1 })}`
+  );
+
+  if (existing[0]) {
+    const existingUser = mapUser(existing[0]);
+    if (existingUser.authUserId !== authUserId) {
+      const [updated] = await supabaseRequest<AppUserRow[]>(
+        `/app_users${buildQuery({ email: `eq.${email}` })}`,
+        {
+          method: "PATCH",
+          headers: {
+            Prefer: "return=representation"
+          },
+          body: {
+            auth_user_id: authUserId,
+            updated_at: currentTimestamp()
+          }
+        }
+      );
+      return mapUser(updated);
+    }
+
+    return existingUser;
+  }
+
+  const [created] = await supabaseRequest<AppUserRow[]>("/app_users", {
+    method: "POST",
+    headers: {
+      Prefer: "return=representation"
+    },
+    body: {
+      id: authUserId,
+      auth_user_id: authUserId,
+      email
+    }
+  });
+
+  return mapUser(created);
 }
 
 export function normalizeDeadline(value: unknown): string | null {
@@ -227,11 +308,15 @@ export function normalizeDeadline(value: unknown): string | null {
   )}:${pad(parsed.getMinutes())}:00`;
 }
 
-export async function getTasks(): Promise<TaskListItem[]> {
+export async function getTasks(userId: string): Promise<TaskListItem[]> {
   const [taskRows, todoRows, progressRows] = await Promise.all([
-    supabaseRequest<TaskRow[]>("/tasks?select=*"),
-    supabaseRequest<TodoRow[]>("/todo_items?select=id,task_id,completed"),
-    supabaseRequest<ProgressRow[]>("/progress_records?select=id,task_id,content,created_at")
+    supabaseRequest<TaskRow[]>(`/tasks${buildQuery({ select: "*", user_id: `eq.${userId}` })}`),
+    supabaseRequest<TodoRow[]>(
+      `/todo_items${buildQuery({ select: "id,task_id,user_id,completed", user_id: `eq.${userId}` })}`
+    ),
+    supabaseRequest<ProgressRow[]>(
+      `/progress_records${buildQuery({ select: "id,task_id,user_id,content,created_at", user_id: `eq.${userId}` })}`
+    )
   ]);
 
   const todosByTask = new Map<number, TodoRow[]>();
@@ -290,8 +375,10 @@ export async function getTasks(): Promise<TaskListItem[]> {
     });
 }
 
-export async function getTask(taskId: number): Promise<TaskDetail | null> {
-  const taskRows = await supabaseRequest<TaskRow[]>(`/tasks${buildQuery({ select: "*", id: `eq.${taskId}`, limit: 1 })}`);
+export async function getTask(userId: string, taskId: number): Promise<TaskDetail | null> {
+  const taskRows = await supabaseRequest<TaskRow[]>(
+    `/tasks${buildQuery({ select: "*", id: `eq.${taskId}`, user_id: `eq.${userId}`, limit: 1 })}`
+  );
   const row = taskRows[0];
 
   if (!row) {
@@ -300,10 +387,20 @@ export async function getTask(taskId: number): Promise<TaskDetail | null> {
 
   const [todos, progressRecords] = await Promise.all([
     supabaseRequest<TodoRow[]>(
-      `/todo_items${buildQuery({ select: "*", task_id: `eq.${taskId}`, order: "sort_order.asc,id.asc" })}`
+      `/todo_items${buildQuery({
+        select: "*",
+        task_id: `eq.${taskId}`,
+        user_id: `eq.${userId}`,
+        order: "sort_order.asc,id.asc"
+      })}`
     ),
     supabaseRequest<ProgressRow[]>(
-      `/progress_records${buildQuery({ select: "*", task_id: `eq.${taskId}`, order: "created_at.desc,id.desc" })}`
+      `/progress_records${buildQuery({
+        select: "*",
+        task_id: `eq.${taskId}`,
+        user_id: `eq.${userId}`,
+        order: "created_at.desc,id.desc"
+      })}`
     )
   ]);
 
@@ -315,6 +412,7 @@ export async function getTask(taskId: number): Promise<TaskDetail | null> {
 }
 
 export async function createTask(
+  userId: string,
   goal: string,
   todos: string[],
   deadlineAt: string | null,
@@ -326,6 +424,7 @@ export async function createTask(
       Prefer: "return=representation"
     },
     body: {
+      user_id: userId,
       goal,
       deadline_at: deadlineAt,
       priority
@@ -341,20 +440,22 @@ export async function createTask(
       },
       body: {
         task_id: taskId,
+        user_id: userId,
         content: todo,
         sort_order: index
       }
     });
   }
 
-  return (await getTask(taskId)) as TaskDetail;
+  return (await getTask(userId, taskId)) as TaskDetail;
 }
 
 export async function updateTask(
+  userId: string,
   taskId: number,
   values: { goal?: string; status?: TaskStatus; deadlineAt?: string | null; priority?: TaskPriority }
 ): Promise<TaskDetail | null> {
-  const existing = await getTask(taskId);
+  const existing = await getTask(userId, taskId);
   if (!existing) {
     return null;
   }
@@ -378,7 +479,7 @@ export async function updateTask(
   }
 
   if (Object.keys(updateValues).length > 0) {
-    await supabaseRequest(`/tasks${buildQuery({ id: `eq.${taskId}` })}`, {
+    await supabaseRequest(`/tasks${buildQuery({ id: `eq.${taskId}`, user_id: `eq.${userId}` })}`, {
       method: "PATCH",
       headers: {
         Prefer: "return=minimal"
@@ -390,11 +491,11 @@ export async function updateTask(
     });
   }
 
-  return getTask(taskId);
+  return getTask(userId, taskId);
 }
 
-export async function createTodo(taskId: number, content: string): Promise<TaskDetail | null> {
-  const task = await getTask(taskId);
+export async function createTodo(userId: string, taskId: number, content: string): Promise<TaskDetail | null> {
+  const task = await getTask(userId, taskId);
   if (!task) {
     return null;
   }
@@ -407,21 +508,23 @@ export async function createTodo(taskId: number, content: string): Promise<TaskD
     },
     body: {
       task_id: taskId,
+      user_id: userId,
       content,
       sort_order: maxSortOrder + 1
     }
   });
 
-  await touchTask(taskId);
-  return getTask(taskId);
+  await touchTask(userId, taskId);
+  return getTask(userId, taskId);
 }
 
 export async function updateTodo(
+  userId: string,
   todoId: number,
   values: { content?: string; completed?: boolean }
 ): Promise<TaskDetail | null> {
   const rows = await supabaseRequest<TodoRow[]>(
-    `/todo_items${buildQuery({ select: "*", id: `eq.${todoId}`, limit: 1 })}`
+    `/todo_items${buildQuery({ select: "*", id: `eq.${todoId}`, user_id: `eq.${userId}`, limit: 1 })}`
   );
   const row = rows[0];
   if (!row) {
@@ -439,7 +542,7 @@ export async function updateTodo(
   }
 
   if (Object.keys(updateValues).length > 0) {
-    await supabaseRequest(`/todo_items${buildQuery({ id: `eq.${todoId}` })}`, {
+    await supabaseRequest(`/todo_items${buildQuery({ id: `eq.${todoId}`, user_id: `eq.${userId}` })}`, {
       method: "PATCH",
       headers: {
         Prefer: "return=minimal"
@@ -450,33 +553,33 @@ export async function updateTodo(
       }
     });
 
-    await touchTask(Number(row.task_id));
+    await touchTask(userId, Number(row.task_id));
   }
 
-  return getTask(Number(row.task_id));
+  return getTask(userId, Number(row.task_id));
 }
 
-export async function deleteTodo(todoId: number): Promise<TaskDetail | null> {
+export async function deleteTodo(userId: string, todoId: number): Promise<TaskDetail | null> {
   const rows = await supabaseRequest<TodoRow[]>(
-    `/todo_items${buildQuery({ select: "*", id: `eq.${todoId}`, limit: 1 })}`
+    `/todo_items${buildQuery({ select: "*", id: `eq.${todoId}`, user_id: `eq.${userId}`, limit: 1 })}`
   );
   const row = rows[0];
   if (!row) {
     return null;
   }
 
-  await supabaseRequest(`/todo_items${buildQuery({ id: `eq.${todoId}` })}`, {
+  await supabaseRequest(`/todo_items${buildQuery({ id: `eq.${todoId}`, user_id: `eq.${userId}` })}`, {
     method: "DELETE",
     headers: {
       Prefer: "return=minimal"
     }
   });
-  await touchTask(Number(row.task_id));
-  return getTask(Number(row.task_id));
+  await touchTask(userId, Number(row.task_id));
+  return getTask(userId, Number(row.task_id));
 }
 
-export async function createProgress(taskId: number, content: string): Promise<TaskDetail | null> {
-  const task = await getTask(taskId);
+export async function createProgress(userId: string, taskId: number, content: string): Promise<TaskDetail | null> {
+  const task = await getTask(userId, taskId);
   if (!task) {
     return null;
   }
@@ -488,15 +591,16 @@ export async function createProgress(taskId: number, content: string): Promise<T
     },
     body: {
       task_id: taskId,
+      user_id: userId,
       content
     }
   });
-  await touchTask(taskId);
-  return getTask(taskId);
+  await touchTask(userId, taskId);
+  return getTask(userId, taskId);
 }
 
-async function touchTask(taskId: number) {
-  await supabaseRequest(`/tasks${buildQuery({ id: `eq.${taskId}` })}`, {
+async function touchTask(userId: string, taskId: number) {
+  await supabaseRequest(`/tasks${buildQuery({ id: `eq.${taskId}`, user_id: `eq.${userId}` })}`, {
     method: "PATCH",
     headers: {
       Prefer: "return=minimal"

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { apiErrorResponse } from "@/lib/api-errors";
+import { requireCurrentUser } from "@/lib/auth";
 import { getTask, isTaskPriority, isTaskStatus, normalizeDeadline, normalizeText, updateTask } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -15,6 +16,7 @@ function parseId(value: string) {
 
 export async function GET(_request: Request, context: RouteContext) {
   try {
+    const user = await requireCurrentUser();
     const { id: idValue } = await context.params;
     const id = parseId(idValue);
 
@@ -22,7 +24,7 @@ export async function GET(_request: Request, context: RouteContext) {
       return NextResponse.json({ error: "任务 ID 无效" }, { status: 400 });
     }
 
-    const task = await getTask(id);
+    const task = await getTask(user.id, id);
     if (!task) {
       return NextResponse.json({ error: "任务不存在" }, { status: 404 });
     }
@@ -35,6 +37,7 @@ export async function GET(_request: Request, context: RouteContext) {
 
 export async function PATCH(request: Request, context: RouteContext) {
   try {
+    const user = await requireCurrentUser();
     const { id: idValue } = await context.params;
     const id = parseId(idValue);
 
@@ -45,7 +48,7 @@ export async function PATCH(request: Request, context: RouteContext) {
     const body = (await request.json().catch(() => null)) as
       | { goal?: unknown; status?: unknown; deadlineAt?: unknown; priority?: unknown }
       | null;
-    const updates: Parameters<typeof updateTask>[1] = {};
+    const updates: Parameters<typeof updateTask>[2] = {};
 
     if (body && Object.hasOwn(body, "goal")) {
       const goal = normalizeText(body.goal);
@@ -77,7 +80,7 @@ export async function PATCH(request: Request, context: RouteContext) {
       updates.priority = body.priority;
     }
 
-    const task = await updateTask(id, updates);
+    const task = await updateTask(user.id, id, updates);
     if (!task) {
       return NextResponse.json({ error: "任务不存在" }, { status: 404 });
     }

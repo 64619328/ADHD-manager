@@ -91,6 +91,66 @@ select:focus-visible,
   overflow: hidden;
 }
 
+.auth-screen {
+  align-items: center;
+  background: var(--surface-muted);
+  display: grid;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.auth-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  display: grid;
+  gap: 18px;
+  justify-self: center;
+  max-width: 420px;
+  padding: 32px;
+  width: min(100%, 420px);
+}
+
+.auth-mark {
+  align-items: center;
+  background: var(--surface-muted);
+  border-radius: 12px;
+  color: var(--deep-green);
+  display: inline-flex;
+  height: 48px;
+  justify-content: center;
+  width: 48px;
+}
+
+.auth-mark svg {
+  height: 26px;
+  width: 26px;
+}
+
+.auth-form {
+  display: grid;
+  gap: 14px;
+}
+
+.auth-input {
+  position: relative;
+}
+
+.auth-input svg {
+  color: var(--muted);
+  height: 18px;
+  left: 14px;
+  pointer-events: none;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+}
+
+.auth-input input {
+  padding-left: 42px;
+}
+
 .sidebar {
   border-right: 1px solid var(--line);
   background: var(--surface-muted);
@@ -124,6 +184,27 @@ select:focus-visible,
   font-size: 13px;
   line-height: 1.45;
   margin: 10px 0 0;
+}
+
+.user-strip {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.64);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) 40px;
+  padding: 8px;
+}
+
+.user-strip span {
+  color: var(--muted);
+  font-family: CohereMono, Arial, ui-sans-serif, system-ui;
+  font-size: 12px;
+  overflow: hidden;
+  padding-left: 6px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .eyebrow {

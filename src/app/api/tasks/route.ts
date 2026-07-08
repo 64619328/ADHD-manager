@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 import { apiErrorResponse } from "@/lib/api-errors";
+import { requireCurrentUser } from "@/lib/auth";
 import { createTask, getTasks, isTaskPriority, normalizeDeadline, normalizeText } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    return NextResponse.json({ tasks: await getTasks() });
+    const user = await requireCurrentUser();
+    return NextResponse.json({ tasks: await getTasks(user.id) });
   } catch (error) {
     return apiErrorResponse(error);
   }
@@ -14,6 +16,7 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
+    const user = await requireCurrentUser();
     const body = (await request.json().catch(() => null)) as
       | { goal?: unknown; todos?: unknown; deadlineAt?: unknown; priority?: unknown }
       | null;
@@ -36,7 +39,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "任务优先级无效" }, { status: 400 });
     }
 
-    return NextResponse.json({ task: await createTask(goal, todos, deadlineAt, priority) }, { status: 201 });
+    return NextResponse.json({ task: await createTask(user.id, goal, todos, deadlineAt, priority) }, { status: 201 });
   } catch (error) {
     return apiErrorResponse(error);
   }

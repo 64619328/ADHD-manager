@@ -10,7 +10,9 @@ import {
   Clock3,
   Folder,
   ListChecks,
+  LogOut,
   Loader2,
+  Mail,
   Pause,
   Play,
   Plus,
@@ -32,6 +34,7 @@ type TaskPriority = (typeof priorities)[number];
 type TodoItem = {
   id: number;
   taskId: number;
+  userId: string;
   content: string;
   completed: boolean;
   sortOrder: number;
@@ -42,12 +45,14 @@ type TodoItem = {
 type ProgressRecord = {
   id: number;
   taskId: number;
+  userId: string;
   content: string;
   createdAt: string;
 };
 
 type TaskDetail = {
   id: number;
+  userId: string;
   goal: string;
   status: TaskStatus;
   priority: TaskPriority;
@@ -69,6 +74,12 @@ type TaskCelebration = {
   taskId: number;
   goal: string;
   completedTodos: number;
+};
+
+type AuthUser = {
+  id: string;
+  authUserId?: string;
+  email: string;
 };
 
 function formatTime(value: string | null) {
@@ -154,6 +165,7 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export default function Home() {
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [tasks, setTasks] = useState<TaskListItem[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [task, setTask] = useState<TaskDetail | null>(null);
@@ -167,6 +179,9 @@ export default function Home() {
   const [newTaskTodos, setNewTaskTodos] = useState("");
   const [newTaskDeadline, setNewTaskDeadline] = useState("");
   const [newTaskPriority, setNewTaskPriority] = useState<TaskPriority>("P2");
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginToken, setLoginToken] = useState("");
+  const [otpSent, setOtpSent] = useState(false);
   const [newTodo, setNewTodo] = useState("");
   const [progressDraft, setProgressDraft] = useState("");
   const [editingTodoId, setEditingTodoId] = useState<number | null>(null);
@@ -177,8 +192,10 @@ export default function Home() {
     已完成: true,
     挂起: true
   });
+  const [authChecking, setAuthChecking] = useState(true);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [loginSaving, setLoginSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [celebratingTodoId, setCelebratingTodoId] = useState<number | null>(null);
@@ -228,12 +245,13 @@ export default function Home() {
     return `${task.todos.filter((todo) => todo.completed).length}/${task.todos.length}`;
   }, [task]);
 
-  async function loadTasks(nextSelectedId?: number) {
+  async function loadTasks(nextSelectedId?: number | null) {
     const data = await requestJson<{ tasks: TaskListItem[] }>("/api/tasks");
     setTasks(data.tasks);
 
     const firstActiveId = data.tasks.find((item) => item.status !== "已完成" && item.status !== "挂起")?.id;
-    const currentId = nextSelectedId ?? selectedId ?? firstActiveId ?? data.tasks[0]?.id ?? null;
+    const requestedId = nextSelectedId === undefined ? selectedId : nextSelectedId;
+    const currentId = requestedId ?? firstActiveId ?? data.tasks[0]?.id ?? null;
     setSelectedId(currentId);
 
     if (currentId) {
@@ -268,9 +286,33 @@ export default function Home() {
   }
 
   useEffect(() => {
-    run(async () => {
-      await loadTasks();
-    });
+    async function loadCurrentUser() {
+      setError("");
+      setAuthChecking(true);
+      setLoading(true);
+
+      try {
+        const data = await requestJson<{ user: AuthUser | null }>("/api/auth/me");
+        setUser(data.user);
+        setLoginEmail(data.user?.email || "");
+
+        if (data.user) {
+          await loadTasks();
+        } else {
+          setTasks([]);
+          setSelectedId(null);
+          setTask(null);
+          setLoading(false);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "登录状态检查失败");
+        setLoading(false);
+      } finally {
+        setAuthChecking(false);
+      }
+    }
+
+    loadCurrentUser();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -396,6 +438,72 @@ export default function Home() {
       setCreateModalOpen(false);
       setNotice("已收进任务列表，先从下一小步开始。");
       await loadTasks(data.task.id);
+    });
+  }
+
+  async function handleRequestOtp(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    setLoginSaving(true);
+
+    try {
+      const data = await requestJson<{ sent: boolean; email: string }>("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ email: loginEmail })
+      });
+      setLoginEmail(data.email);
+      setOtpSent(true);
+      setLoginToken("");
+      setNotice("验证码已发送，请查看邮箱。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "发送验证码失败");
+    } finally {
+      setLoginSaving(false);
+      setAuthChecking(false);
+    }
+  }
+
+  async function handleVerifyOtp(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    setLoginSaving(true);
+    setLoading(true);
+
+    try {
+      const data = await requestJson<{ user: AuthUser }>("/api/auth/verify", {
+        method: "POST",
+        body: JSON.stringify({ email: loginEmail, token: loginToken })
+      });
+      setUser(data.user);
+      setSelectedId(null);
+      setTask(null);
+      setOtpSent(false);
+      setLoginToken("");
+      setNotice("登录成功，任务列表已按邮箱隔离。");
+      await loadTasks(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "验证码验证失败");
+      setLoading(false);
+    } finally {
+      setLoginSaving(false);
+      setAuthChecking(false);
+    }
+  }
+
+  async function handleLogout() {
+    await run(async () => {
+      await requestJson<{ ok: boolean }>("/api/auth/logout", {
+        method: "POST"
+      });
+      setUser(null);
+      setTasks([]);
+      setSelectedId(null);
+      setTask(null);
+      setGoalDraft("");
+      setDeadlineDraft("");
+      setPriorityDraft("P2");
+      setNotice("");
+      setLoading(false);
     });
   }
 
@@ -562,6 +670,95 @@ export default function Home() {
     );
   }
 
+  if (authChecking) {
+    return (
+      <main className="auth-screen">
+        <section className="auth-panel" aria-live="polite">
+          <Loader2 className="spin" aria-hidden="true" />
+          <h1>正在检查登录状态</h1>
+        </section>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main className="auth-screen">
+        <section className="auth-panel" aria-labelledby="auth-title">
+          <div className="auth-mark">
+            <ListChecks aria-hidden="true" />
+          </div>
+          <p className="eyebrow">Supabase Auth</p>
+          <h1 id="auth-title">放弃挣扎吧ADHD</h1>
+          <p className="brand-subtitle">
+            {otpSent ? "输入邮箱中的验证码完成登录。" : "输入邮箱获取验证码，你的任务会按用户单独保存。"}
+          </p>
+
+          <form className="auth-form" onSubmit={otpSent ? handleVerifyOtp : handleRequestOtp}>
+            <label htmlFor="login-email">邮箱</label>
+            <div className="auth-input">
+              <Mail aria-hidden="true" />
+              <input
+                id="login-email"
+                type="email"
+                value={loginEmail}
+                onChange={(event) => setLoginEmail(event.target.value)}
+                placeholder="you@example.com"
+                disabled={otpSent}
+                required
+              />
+            </div>
+
+            {otpSent ? (
+              <>
+                <label htmlFor="login-token">验证码</label>
+                <input
+                  id="login-token"
+                  inputMode="numeric"
+                  value={loginToken}
+                  onChange={(event) => setLoginToken(event.target.value)}
+                  placeholder="输入 6 位验证码"
+                  required
+                />
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={loginSaving}
+                  onClick={() => {
+                    setOtpSent(false);
+                    setLoginToken("");
+                    setNotice("");
+                  }}
+                >
+                  换个邮箱
+                </button>
+              </>
+            ) : null}
+
+            <button className="primary-button" type="submit" disabled={loginSaving}>
+              {loginSaving ? <Loader2 className="spin" aria-hidden="true" /> : <Mail aria-hidden="true" />}
+              {otpSent ? "验证并登录" : "发送验证码"}
+            </button>
+          </form>
+
+          {notice ? (
+            <div className="toast toast-success" role="status">
+              <CheckCircle2 aria-hidden="true" />
+              <span>{notice}</span>
+            </div>
+          ) : null}
+
+          {error ? (
+            <div className="toast" role="alert">
+              <span>{error}</span>
+              <button type="button" onClick={() => setError("")}>知道了</button>
+            </div>
+          ) : null}
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -571,6 +768,13 @@ export default function Home() {
             <p className="brand-subtitle">不和大脑硬碰硬，先完成下一小步。</p>
           </div>
           <ListChecks aria-hidden="true" />
+        </div>
+
+        <div className="user-strip">
+          <span>{user.email}</span>
+          <button className="icon-button" type="button" aria-label="退出登录" onClick={handleLogout}>
+            <LogOut aria-hidden="true" />
+          </button>
         </div>
 
         <button

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { apiErrorResponse } from "@/lib/api-errors";
+import { requireCurrentUser } from "@/lib/auth";
 import { createProgress, normalizeText } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -15,6 +16,7 @@ function parseId(value: string) {
 
 export async function POST(request: Request, context: RouteContext) {
   try {
+    const user = await requireCurrentUser();
     const { id: idValue } = await context.params;
     const id = parseId(idValue);
 
@@ -29,7 +31,7 @@ export async function POST(request: Request, context: RouteContext) {
       return NextResponse.json({ error: "进度记录不能为空" }, { status: 400 });
     }
 
-    const task = await createProgress(id, content);
+    const task = await createProgress(user.id, id, content);
     if (!task) {
       return NextResponse.json({ error: "任务不存在" }, { status: 404 });
     }

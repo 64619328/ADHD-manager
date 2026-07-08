@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { apiErrorResponse } from "@/lib/api-errors";
+import { requireCurrentUser } from "@/lib/auth";
 import { deleteTodo, normalizeText, updateTodo } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -15,6 +16,7 @@ function parseId(value: string) {
 
 export async function PATCH(request: Request, context: RouteContext) {
   try {
+    const user = await requireCurrentUser();
     const { id: idValue } = await context.params;
     const id = parseId(idValue);
 
@@ -23,7 +25,7 @@ export async function PATCH(request: Request, context: RouteContext) {
     }
 
     const body = (await request.json().catch(() => null)) as { content?: unknown; completed?: unknown } | null;
-    const updates: Parameters<typeof updateTodo>[1] = {};
+    const updates: Parameters<typeof updateTodo>[2] = {};
 
     if (body && Object.hasOwn(body, "content")) {
       const content = normalizeText(body.content);
@@ -40,7 +42,7 @@ export async function PATCH(request: Request, context: RouteContext) {
       updates.completed = body.completed;
     }
 
-    const task = await updateTodo(id, updates);
+    const task = await updateTodo(user.id, id, updates);
     if (!task) {
       return NextResponse.json({ error: "待办不存在" }, { status: 404 });
     }
@@ -53,6 +55,7 @@ export async function PATCH(request: Request, context: RouteContext) {
 
 export async function DELETE(_request: Request, context: RouteContext) {
   try {
+    const user = await requireCurrentUser();
     const { id: idValue } = await context.params;
     const id = parseId(idValue);
 
@@ -60,7 +63,7 @@ export async function DELETE(_request: Request, context: RouteContext) {
       return NextResponse.json({ error: "待办 ID 无效" }, { status: 400 });
     }
 
-    const task = await deleteTodo(id);
+    const task = await deleteTodo(user.id, id);
     if (!task) {
       return NextResponse.json({ error: "待办不存在" }, { status: 404 });
     }
