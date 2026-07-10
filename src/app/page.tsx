@@ -180,8 +180,6 @@ export default function Home() {
   const [newTaskDeadline, setNewTaskDeadline] = useState("");
   const [newTaskPriority, setNewTaskPriority] = useState<TaskPriority>("P2");
   const [loginEmail, setLoginEmail] = useState("");
-  const [loginToken, setLoginToken] = useState("");
-  const [otpSent, setOtpSent] = useState(false);
   const [newTodo, setNewTodo] = useState("");
   const [progressDraft, setProgressDraft] = useState("");
   const [editingTodoId, setEditingTodoId] = useState<number | null>(null);
@@ -196,6 +194,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [loginSaving, setLoginSaving] = useState(false);
+  const [magicLinkCooldown, setMagicLinkCooldown] = useState(0);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [celebratingTodoId, setCelebratingTodoId] = useState<number | null>(null);
@@ -328,6 +327,17 @@ export default function Home() {
   }, [notice]);
 
   useEffect(() => {
+    if (magicLinkCooldown <= 0) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      setMagicLinkCooldown((value) => Math.max(0, value - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [magicLinkCooldown]);
+
+  useEffect(() => {
     if (celebratingTodoId === null) return;
     const timer = window.setTimeout(() => setCelebratingTodoId(null), 900);
     return () => window.clearTimeout(timer);
@@ -441,8 +451,13 @@ export default function Home() {
     });
   }
 
-  async function handleRequestOtp(event: FormEvent<HTMLFormElement>) {
+  async function handleRequestMagicLink(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (magicLinkCooldown > 0) {
+      setError(`请等待 ${magicLinkCooldown} 秒后再发送登录链接。`);
+      return;
+    }
+
     setError("");
     setLoginSaving(true);
 
@@ -452,38 +467,14 @@ export default function Home() {
         body: JSON.stringify({ email: loginEmail })
       });
       setLoginEmail(data.email);
-      setOtpSent(true);
-      setLoginToken("");
-      setNotice("验证码已发送，请查看邮箱。");
+      setNotice("登录链接已发送，请打开邮箱点击 Sign in 完成登录。");
+      setMagicLinkCooldown(60);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "发送验证码失败");
-    } finally {
-      setLoginSaving(false);
-      setAuthChecking(false);
-    }
-  }
-
-  async function handleVerifyOtp(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setError("");
-    setLoginSaving(true);
-    setLoading(true);
-
-    try {
-      const data = await requestJson<{ user: AuthUser }>("/api/auth/verify", {
-        method: "POST",
-        body: JSON.stringify({ email: loginEmail, token: loginToken })
-      });
-      setUser(data.user);
-      setSelectedId(null);
-      setTask(null);
-      setOtpSent(false);
-      setLoginToken("");
-      setNotice("登录成功，任务列表已按邮箱隔离。");
-      await loadTasks(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "验证码验证失败");
-      setLoading(false);
+      const message = err instanceof Error ? err.message : "发送登录链接失败";
+      setError(message);
+      if (message.includes("发送太频繁") || message.toLowerCase().includes("rate limit")) {
+        setMagicLinkCooldown(60);
+      }
     } finally {
       setLoginSaving(false);
       setAuthChecking(false);
@@ -690,11 +681,9 @@ export default function Home() {
           </div>
           <p className="eyebrow">Supabase Auth</p>
           <h1 id="auth-title">放弃挣扎吧ADHD</h1>
-          <p className="brand-subtitle">
-            {otpSent ? "输入邮箱中的验证码完成登录。" : "输入邮箱获取验证码，你的任务会按用户单独保存。"}
-          </p>
+          <p className="brand-subtitle">输入邮箱获取登录链接，你的任务会按用户单独保存。</p>
 
-          <form className="auth-form" onSubmit={otpSent ? handleVerifyOtp : handleRequestOtp}>
+          <form className="auth-form" onSubmit={handleRequestMagicLink}>
             <label htmlFor="login-email">邮箱</label>
             <div className="auth-input">
               <Mail aria-hidden="true" />
@@ -704,40 +693,13 @@ export default function Home() {
                 value={loginEmail}
                 onChange={(event) => setLoginEmail(event.target.value)}
                 placeholder="you@example.com"
-                disabled={otpSent}
                 required
               />
             </div>
 
-            {otpSent ? (
-              <>
-                <label htmlFor="login-token">验证码</label>
-                <input
-                  id="login-token"
-                  inputMode="numeric"
-                  value={loginToken}
-                  onChange={(event) => setLoginToken(event.target.value)}
-                  placeholder="输入 6 位验证码"
-                  required
-                />
-                <button
-                  className="secondary-button"
-                  type="button"
-                  disabled={loginSaving}
-                  onClick={() => {
-                    setOtpSent(false);
-                    setLoginToken("");
-                    setNotice("");
-                  }}
-                >
-                  换个邮箱
-                </button>
-              </>
-            ) : null}
-
-            <button className="primary-button" type="submit" disabled={loginSaving}>
+            <button className="primary-button" type="submit" disabled={loginSaving || magicLinkCooldown > 0}>
               {loginSaving ? <Loader2 className="spin" aria-hidden="true" /> : <Mail aria-hidden="true" />}
-              {otpSent ? "验证并登录" : "发送验证码"}
+              {magicLinkCooldown > 0 ? `${magicLinkCooldown} 秒后可重发` : "发送登录链接"}
             </button>
           </form>
 
