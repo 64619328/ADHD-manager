@@ -43,3 +43,5 @@ yarn-error.log*
 # project-specific
 data/*.db
 data/*.db-*
+docx/
+research/
